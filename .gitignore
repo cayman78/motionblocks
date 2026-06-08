@@ -216,3 +216,37 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# PlatformIO
+.pio/
+.vscode/.browse_c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data and databases
+data/raw/*.csv
+data/processed/*.csv
+data/db/*.db
+data/db/*.sqlite
+
+# Keep folder placeholders and docs
+!data/raw/README.md
+!data/processed/README.md
+!data/db/README.md
+!data/examples/README.md
