@@ -177,3 +177,20 @@ Short title of the work session.
 
 * `path/to/file`
 * `path/to/file`
+
+
+## 2026-06-08 — IMU logger v0.1
+
+### Expected result
+
+M5StickC Plus2 should read IMU data and print it to Serial Monitor in CSV format.
+
+### Actual result
+
+IMU logger works after adding `M5.Imu.update()` before reading data with `M5.Imu.getImuData()`.
+
+Serial Monitor prints CSV rows:
+
+```csv
+timestamp_ms,ax,ay,az,gx,gy,gz
+... 
