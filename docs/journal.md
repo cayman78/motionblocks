@@ -528,3 +528,115 @@ Immediate next actions:
 * [ ] Save first numbered CSV record.
 * [ ] Create initial SQLite schema.
 * [ ] Later: move transport from Serial to Wi-Fi.
+
+
+## 2026-06-08 PlatformIO build / upload reminder
+
+Firmware project location:
+
+```text
+firmware/m5stickc-plus2
+```
+
+Main firmware file:
+
+```text
+firmware/m5stickc-plus2/src/main.cpp
+```
+
+Before running PlatformIO commands, go to the firmware project folder:
+
+```powershell
+cd firmware/m5stickc-plus2
+```
+
+### Build firmware
+
+Compile firmware without uploading it to the device:
+
+```powershell
+pio run
+```
+
+Expected result:
+
+```text
+[SUCCESS]
+```
+
+### Upload firmware to M5StickC Plus2
+
+Upload firmware to the device connected as `COM6`:
+
+```powershell
+pio run --target upload --upload-port COM6
+```
+
+Expected result:
+
+```text
+Hard resetting via RTS pin...
+[SUCCESS]
+```
+
+### Open Serial Monitor
+
+Open Serial Monitor at `115200` baud:
+
+```powershell
+pio device monitor --port COM6 --baud 115200
+```
+
+Exit Serial Monitor:
+
+```text
+Ctrl + C
+```
+
+### Full command sequence
+
+```powershell
+cd firmware/m5stickc-plus2
+pio run
+pio run --target upload --upload-port COM6
+pio device monitor --port COM6 --baud 115200
+```
+
+### Notes
+
+* `COM6` is the current M5StickC Plus2 USB serial port.
+* Bluetooth COM ports such as `COM3` / `COM4` should not be used.
+* If upload fails, check that Serial Monitor is closed.
+* If the port changes, run:
+
+```powershell
+pio device list
+```
+
+and find the device named similar to:
+
+```text
+USB-Enhanced-SERIAL CH9102
+```
+## 2026-06-09 — Button-controlled IMU logger v0.2
+
+### Result
+
+Implemented and tested button-controlled IMU recording on M5StickC Plus2.
+
+### Behavior
+
+- Device starts in `IDLE` mode.
+- Double click on Button A starts a new record.
+- Single click on Button A stops the current record.
+- Current record number is shown on the screen.
+- Sample count is shown during recording.
+- IMU data is sent to Serial only while recording.
+
+### Serial protocol
+
+```csv
+EVENT,START,record_id,timestamp_ms
+DATA,record_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+EVENT,STOP,record_id,timestamp_ms,sample_count
+
