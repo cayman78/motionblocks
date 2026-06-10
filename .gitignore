@@ -265,3 +265,6 @@ data/db/*
 # Keep examples under version control
 !data/examples/
 !data/examples/**
+
+# Local Wi-Fi credentials
+firmware/m5stickc-plus2/src/wifi_config.h
