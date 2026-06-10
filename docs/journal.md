@@ -1359,6 +1359,142 @@ Expected logger endpoint for current network:
 Add HTTP logger receiver
 ```
 
+## 2026-06-10 — Wireless HTTP logging works
+
+### Context
+
+Continued the transition from wired Serial logging to wireless data collection.
+
+The previous limitation was that the device had to remain connected by USB cable, which made realistic wrist-based motion testing impossible.
+
+Target wireless pipeline:
+
+```text
+M5StickC Plus2
+  → Wi-Fi
+  → HTTP POST
+  → Python HTTP logger
+  → CSV files
+  → draft metadata
+```
+
+### Implemented
+
+Updated firmware to send the same MotionBlocks protocol lines through two channels:
+
+```text
+Serial
+HTTP POST
+```
+
+The protocol itself remains unchanged:
+
+```csv
+EVENT,NEW_SESSION,session_id,timestamp_ms
+EVENT,START,session_id,record_id,timestamp_ms
+DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+```
+
+The firmware now uses:
+
+```cpp
+WiFi.h
+HTTPClient.h
+wifi_config.h
+```
+
+The local `wifi_config.h` contains:
+
+```cpp
+WIFI_SSID
+WIFI_PASSWORD
+LOGGER_URL
+```
+
+The real `wifi_config.h` is excluded from Git.
+
+### Tested
+
+The Python HTTP logger was running on the notebook:
+
+```powershell
+python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --device-id m5_001 --create-metadata
+```
+
+The device connected to Wi-Fi successfully.
+
+The device sent MotionBlocks protocol lines to:
+
+```text
+POST /line
+```
+
+The HTTP logger received the data and wrote it to CSV files.
+
+### Result
+
+Confirmed:
+
+```text
+[✓] M5StickC connects to Wi-Fi
+[✓] READY screen shows Wi-Fi IP
+[✓] Python HTTP logger is reachable from local network
+[✓] Firmware sends EVENT lines over HTTP
+[✓] Firmware sends DATA lines over HTTP
+[✓] HTTP logger writes received data to CSV
+[✓] Draft metadata generation still works
+[✓] Serial output remains available for debugging
+[✓] Wireless recording mode works
+```
+
+### Current wireless pipeline
+
+```text
+M5StickC Plus2
+  → Wi-Fi
+  → HTTP POST /line
+  → tools/http_logger.py
+  → data/raw/EXP01/m5_001/session_A001.csv
+  → data/metadata/experiments.json
+  → data/metadata/recording_sessions.json
+```
+
+### Important notes
+
+The wireless mode depends on local network settings.
+
+For access from other devices, Windows network profile must be set to:
+
+```text
+Private network
+```
+
+The logger notebook IP in the current network was:
+
+```text
+192.168.8.129
+```
+
+The firmware endpoint was:
+
+```cpp
+#define LOGGER_URL "http://192.168.8.129:8080/line"
+```
+
+### Next steps
+
+* Test the device on a table without USB cable.
+* Test the device on wrist.
+* Collect the first real mini-dataset.
+* Check whether 10 Hz HTTP POST is stable during movement.
+* Later consider batching / buffering if packet loss or delays appear.
+
+### Recommended commit message
+
+```text
+Add Wi-Fi HTTP output to device logger
+```
 
 # Journal entry template
 

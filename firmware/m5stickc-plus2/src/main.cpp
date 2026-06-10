@@ -1,35 +1,44 @@
-#include <M5Unified.h>
+#include <M5Unified.h>     // основная библиотека M5Stack/M5StickC: экран, кнопки, IMU
 #include <WiFi.h>          // Wi-Fi подключение ESP32 к локальной сети
+#include <HTTPClient.h>    // HTTP-клиент ESP32 для отправки POST-запросов на Python logger
 #include "wifi_config.h"   // локальные Wi-Fi настройки: WIFI_SSID, WIFI_PASSWORD, LOGGER_URL
-#include <math.h>
+#include <math.h>          // нужна для sqrt при расчёте acc_norm
+
 
 // ============================================================
-// MotionBlocks — IMU logger v0.3
-//
-// Новое в v0.3:
-// - добавлен session_id;
-// - Button B переключает на следующую сессию;
-// - Button A double click запускает запись;
-// - Button A single click во время записи останавливает запись;
-// - experiment_id, device_id, subject_id прошивка НЕ знает.
+// MotionBlocks — IMU logger v0.4
 //
 // Текущий этап:
-// - Serial-протокол сохранён;
-// - добавлено Wi-Fi подключение;
-// - в READY-экране отображается Wi-Fi status / IP;
-// - HTTP-отправка данных ещё НЕ добавлена.
+// - session-aware IMU logger;
+// - button-controlled recording;
+// - Serial output preserved;
+// - Wi-Fi connection added;
+// - HTTP POST output added;
+// - READY screen shows Wi-Fi status / IP.
 //
-// Serial-протокол:
+// Важно:
+// - прошивка НЕ знает experiment_id;
+// - прошивка НЕ знает device_id;
+// - прошивка НЕ знает subject_id;
+// - прошивка НЕ знает movement_type.
+//
+// Эти поля задаются на стороне Python logger / metadata.
+//
+// Протокол:
 //
 // EVENT,NEW_SESSION,session_id,timestamp_ms
 // EVENT,START,session_id,record_id,timestamp_ms
 // DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
 // EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+//
+// Одна и та же строка протокола отправляется:
+// - в Serial;
+// - по HTTP POST на LOGGER_URL.
 // ============================================================
 
 
 // ------------------------------------------------------------
-// Настройки
+// Настройки записи
 // ------------------------------------------------------------
 
 // Частота записи: 10 Гц = один сэмпл каждые 100 мс.
@@ -38,6 +47,11 @@ static const uint32_t SAMPLE_INTERVAL_MS = 100;
 // Максимальный интервал между двумя кликами Button A,
 // чтобы считать их двойным нажатием.
 static const uint32_t DOUBLE_CLICK_WINDOW_MS = 400;
+
+// Timeout HTTP-запроса.
+// Важно: слишком большой timeout может тормозить запись,
+// если сервер недоступен.
+static const uint32_t HTTP_TIMEOUT_MS = 300;
 
 
 // ------------------------------------------------------------
@@ -71,15 +85,27 @@ static const int MAIN_X = 34;
 // Состояние сессии / записи
 // ------------------------------------------------------------
 
+// Номер текущей сессии.
+// На экране и в протоколе будет отображаться как A001, A002, A003...
 uint32_t session_number = 1;
+
+// Номер текущей попытки внутри сессии.
 uint32_t record_id = 1;
+
+// Номер сэмпла внутри текущей попытки.
 uint32_t sample_id = 0;
+
+// Количество сэмплов внутри текущей попытки.
 uint32_t sample_count = 0;
 
+// Идёт ли сейчас запись.
 bool is_recording = false;
 
+// Время последнего сэмпла.
 uint32_t last_sample_ms = 0;
 
+// Последнее значение нормы ускорения.
+// Используется только для экрана.
 float last_acc_norm = 0.0f;
 
 
@@ -87,7 +113,10 @@ float last_acc_norm = 0.0f;
 // Состояние кнопок
 // ------------------------------------------------------------
 
+// Время первого клика Button A.
 uint32_t last_click_ms = 0;
+
+// Ждём ли второй клик Button A для double click.
 bool waiting_for_second_click = false;
 
 
@@ -122,22 +151,10 @@ String getWifiStatusText() {
 
 
 // ------------------------------------------------------------
-// Отправка события NEW_SESSION в Serial
-// ------------------------------------------------------------
-
-void sendNewSessionEvent() {
-    char session_id[8];
-    getSessionId(session_id, sizeof(session_id));
-
-    Serial.print("EVENT,NEW_SESSION,");
-    Serial.print(session_id);
-    Serial.print(",");
-    Serial.println(millis());
-}
-
-
-// ------------------------------------------------------------
 // Экран: вертикальная надпись LOGGER
+//
+// Не вращаем текст через setRotation.
+// Просто рисуем буквы столбиком — так меньше риска сломать ориентацию.
 // ------------------------------------------------------------
 
 void drawVerticalLoggerLabel() {
@@ -243,8 +260,8 @@ void drawWifiFailScreen() {
 // ------------------------------------------------------------
 // Подключение к Wi-Fi
 //
-// Пока это только подключение.
-// HTTP POST отправку добавим следующим шагом.
+// Подключаем устройство как Wi-Fi station.
+// Если подключение успешно, устройство получает IP в локальной сети.
 // ------------------------------------------------------------
 
 void connectToWifi() {
@@ -255,7 +272,11 @@ void connectToWifi() {
 
     drawWifiConnectingScreen();
 
+    WiFi.disconnect(true);
+    delay(500);
+
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     uint32_t start_ms = millis();
@@ -278,7 +299,88 @@ void connectToWifi() {
     }
 
     Serial.println("Wi-Fi connection failed.");
+    Serial.print("Wi-Fi status code: ");
+    Serial.println(WiFi.status());
+
     drawWifiFailScreen();
+}
+
+
+// ------------------------------------------------------------
+// Отправка одной строки протокола по HTTP
+//
+// На вход подаётся та же строка, которая печатается в Serial:
+//
+//   EVENT,NEW_SESSION,A001,12345
+//   EVENT,START,A001,1,13000
+//   DATA,A001,1,1,13100,...
+//   EVENT,STOP,A001,1,19000,60
+//
+// Python HTTP logger принимает её через:
+//
+//   POST /line
+//
+// Важно:
+// - если Wi-Fi не подключён, строка не отправляется по HTTP;
+// - Serial при этом продолжает работать;
+// - успешные POST не печатаем, чтобы не засорять Serial Monitor;
+// - ошибки печатаем в Serial для диагностики.
+// ------------------------------------------------------------
+
+void sendHttpLine(const String& line) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("HTTP skipped: Wi-Fi not connected");
+        return;
+    }
+
+    HTTPClient http;
+
+    http.begin(LOGGER_URL);
+    http.addHeader("Content-Type", "text/plain");
+    http.setTimeout(HTTP_TIMEOUT_MS);
+
+    int http_code = http.POST(line);
+
+    if (http_code != 200) {
+        Serial.print("HTTP POST failed, code=");
+        Serial.println(http_code);
+    }
+
+    http.end();
+}
+
+
+// ------------------------------------------------------------
+// Единая отправка строки протокола
+//
+// Сейчас строка уходит в два канала:
+//
+//   1. Serial — для отладки и совместимости со старым serial_logger.py
+//   2. HTTP   — для беспроводного http_logger.py
+//
+// Это позволяет не менять сам формат протокола.
+// ------------------------------------------------------------
+
+void emitProtocolLine(const String& line) {
+    Serial.println(line);
+    sendHttpLine(line);
+}
+
+
+// ------------------------------------------------------------
+// Отправка события NEW_SESSION
+// ------------------------------------------------------------
+
+void sendNewSessionEvent() {
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
+    String line =
+        String("EVENT,NEW_SESSION,") +
+        session_id + "," +
+        String(millis());
+
+    emitProtocolLine(line);
 }
 
 
@@ -324,6 +426,9 @@ void drawIdleScreen() {
 
 // ------------------------------------------------------------
 // Обновление числовых значений на REC-экране
+//
+// Обновляем только центральную область,
+// чтобы уменьшить мерцание и не перерисовывать весь экран.
 // ------------------------------------------------------------
 
 void updateRecordingValues(float acc_norm) {
@@ -396,12 +501,13 @@ void startRecord() {
     last_acc_norm = 0.0f;
     last_sample_ms = millis();
 
-    Serial.print("EVENT,START,");
-    Serial.print(session_id);
-    Serial.print(",");
-    Serial.print(record_id);
-    Serial.print(",");
-    Serial.println(millis());
+    String line =
+        String("EVENT,START,") +
+        session_id + "," +
+        String(record_id) + "," +
+        String(millis());
+
+    emitProtocolLine(line);
 
     drawRecordingScreen(last_acc_norm);
 }
@@ -415,14 +521,14 @@ void stopRecord() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    Serial.print("EVENT,STOP,");
-    Serial.print(session_id);
-    Serial.print(",");
-    Serial.print(record_id);
-    Serial.print(",");
-    Serial.print(millis());
-    Serial.print(",");
-    Serial.println(sample_count);
+    String line =
+        String("EVENT,STOP,") +
+        session_id + "," +
+        String(record_id) + "," +
+        String(millis()) + "," +
+        String(sample_count);
+
+    emitProtocolLine(line);
 
     is_recording = false;
 
@@ -435,6 +541,11 @@ void stopRecord() {
 
 // ------------------------------------------------------------
 // Переход к следующей сессии
+//
+// Важно:
+// - если запись идёт, Button B игнорируется;
+// - при переходе к новой сессии record_id снова начинается с 1;
+// - прошивка не знает, в какой experiment попадёт сессия.
 // ------------------------------------------------------------
 
 void nextSession() {
@@ -526,7 +637,7 @@ void handleClickTimeout() {
 
 
 // ------------------------------------------------------------
-// Чтение IMU и отправка строки DATA в Serial
+// Чтение IMU и отправка строки DATA
 // ------------------------------------------------------------
 
 void sendImuSample() {
@@ -544,12 +655,13 @@ void sendImuSample() {
         char session_id[8];
         getSessionId(session_id, sizeof(session_id));
 
-        Serial.print("EVENT,IMU_NOT_UPDATED,");
-        Serial.print(session_id);
-        Serial.print(",");
-        Serial.print(record_id);
-        Serial.print(",");
-        Serial.println(now);
+        String line =
+            String("EVENT,IMU_NOT_UPDATED,") +
+            session_id + "," +
+            String(record_id) + "," +
+            String(now);
+
+        emitProtocolLine(line);
         return;
     }
 
@@ -572,28 +684,21 @@ void sendImuSample() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    Serial.print("DATA,");
-    Serial.print(session_id);
-    Serial.print(",");
-    Serial.print(record_id);
-    Serial.print(",");
-    Serial.print(sample_id);
-    Serial.print(",");
-    Serial.print(now);
-    Serial.print(",");
-    Serial.print(ax, 4);
-    Serial.print(",");
-    Serial.print(ay, 4);
-    Serial.print(",");
-    Serial.print(az, 4);
-    Serial.print(",");
-    Serial.print(gx, 4);
-    Serial.print(",");
-    Serial.print(gy, 4);
-    Serial.print(",");
-    Serial.print(gz, 4);
-    Serial.print(",");
-    Serial.println(acc_norm, 4);
+    String line =
+        String("DATA,") +
+        session_id + "," +
+        String(record_id) + "," +
+        String(sample_id) + "," +
+        String(now) + "," +
+        String(ax, 4) + "," +
+        String(ay, 4) + "," +
+        String(az, 4) + "," +
+        String(gx, 4) + "," +
+        String(gy, 4) + "," +
+        String(gz, 4) + "," +
+        String(acc_norm, 4);
+
+    emitProtocolLine(line);
 
     // Экран обновляем не на каждом сэмпле, а примерно 2 раза в секунду.
     // При sample_count == 1 обновляем сразу, чтобы не висел ноль.
@@ -626,18 +731,21 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    Serial.println("MotionBlocks IMU logger v0.3");
+    Serial.println("MotionBlocks IMU logger v0.4");
     Serial.println("Protocol:");
     Serial.println("EVENT,NEW_SESSION,session_id,timestamp_ms");
     Serial.println("EVENT,START,session_id,record_id,timestamp_ms");
     Serial.println("DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm");
     Serial.println("EVENT,STOP,session_id,record_id,timestamp_ms,sample_count");
+    Serial.println();
+    Serial.print("HTTP logger URL: ");
+    Serial.println(LOGGER_URL);
 
     // Подключаемся к Wi-Fi.
-    // Пока данные по HTTP не отправляем.
     connectToWifi();
 
-    // Сообщаем компьютеру стартовую сессию A001.
+    // Сообщаем стартовую сессию A001.
+    // Теперь строка уйдёт и в Serial, и по HTTP.
     sendNewSessionEvent();
 
     drawIdleScreen();

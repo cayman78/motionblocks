@@ -6,11 +6,28 @@
 
 ## Current project phase
 
-Stage 2 — Button-controlled recording and file/session-aware data collection.
+Stage 4 — Wireless HTTP logging and first wearable data collection.
 
-The project has moved beyond initial device bring-up. The M5StickC Plus2 can now read IMU data, start and stop recordings by button, and manage recording sessions.
+The project has moved beyond initial device bring-up, wired Serial logging, and display cleanup.
 
-The next major step is to implement the Python Serial logger that will save device output into structured CSV files.
+The current working pipeline is:
+
+```text
+M5StickC Plus2
+  → Wi-Fi
+  → HTTP POST /line
+  → tools/http_logger.py
+  → session CSV files
+  → draft metadata
+```
+
+The previous USB Serial pipeline still exists and remains useful for debugging, but the main practical path for real movement experiments is now wireless HTTP logging.
+
+Current immediate goal:
+
+```text
+collect the first real mini-dataset in wireless mode
+```
 
 ---
 
@@ -22,6 +39,12 @@ The next major step is to implement the Python Serial logger that will save devi
 
 MotionBlocks is an educational and technical project for collecting, labeling, and analyzing human motion data from wearable sensors.
 
+The current hardware target is:
+
+```text
+M5StickC Plus2
+```
+
 ---
 
 ## Current firmware status
@@ -29,14 +52,27 @@ MotionBlocks is an educational and technical project for collecting, labeling, a
 Current working firmware:
 
 ```text
-IMU logger v0.3 — session-aware button-controlled logger
+IMU logger v0.4 — Wi-Fi HTTP session-aware button-controlled logger
 ```
 
-Current firmware branch:
+Current working branch:
 
 ```text
-feature/session-aware-logger
+feature/wifi-http-logger
 ```
+
+Current firmware capabilities:
+
+* reads IMU data from M5StickC Plus2;
+* calculates `acc_norm`;
+* supports button-controlled recording;
+* manages sessions and records;
+* sends the same protocol lines through Serial and HTTP;
+* connects to Wi-Fi using local `wifi_config.h`;
+* sends protocol lines to Python HTTP logger using `HTTPClient`;
+* shows a startup splash screen;
+* shows Wi-Fi status / IP address on the READY screen;
+* shows current record metrics on the REC screen.
 
 Confirmed behavior:
 
@@ -87,9 +123,9 @@ This keeps the device generic and reusable across experiments.
 
 ---
 
-## Current Serial protocol
+## Current protocol
 
-The current firmware prints the following protocol to Serial:
+The firmware sends the same protocol through both Serial and HTTP:
 
 ```csv
 EVENT,NEW_SESSION,session_id,timestamp_ms
@@ -108,6 +144,151 @@ DATA,A001,1,2,13200,0.0130,-0.0338,0.9869,0.1100,-0.0400,0.0200,0.9878
 EVENT,STOP,A001,1,19000,60
 EVENT,NEW_SESSION,A002,22000
 ```
+
+Current design decision:
+
+```text
+The protocol format remains stable.
+Only the transport changes: Serial and/or HTTP.
+```
+
+---
+
+## Current transport status
+
+### Wired debug path
+
+```text
+M5StickC Plus2 → USB Serial / COM6 → tools/serial_logger.py
+```
+
+Status:
+
+```text
+working / useful for debugging
+```
+
+### Wireless working path
+
+```text
+M5StickC Plus2
+  → Wi-Fi
+  → HTTP POST /line
+  → tools/http_logger.py
+  → CSV / metadata
+```
+
+Status:
+
+```text
+working
+```
+
+The Python HTTP logger is launched from repository root:
+
+```powershell
+python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --device-id m5_001 --create-metadata
+```
+
+HTTP endpoints:
+
+```text
+GET  /health
+POST /line
+```
+
+Current local network note:
+
+```text
+For iPad / M5StickC to reach the Python HTTP logger,
+Windows network profile must be Private, not Public.
+```
+
+During the first successful test, the notebook Wi-Fi IP was:
+
+```text
+192.168.8.129
+```
+
+The corresponding firmware logger endpoint was:
+
+```cpp
+#define LOGGER_URL "http://192.168.8.129:8080/line"
+```
+
+---
+
+## Wi-Fi configuration
+
+Firmware uses a local config file:
+
+```text
+firmware/m5stickc-plus2/src/wifi_config.h
+```
+
+It contains:
+
+```cpp
+WIFI_SSID
+WIFI_PASSWORD
+LOGGER_URL
+```
+
+The real `wifi_config.h` contains Wi-Fi credentials and must not be committed to Git.
+
+Repository contains only:
+
+```text
+firmware/m5stickc-plus2/src/wifi_config.example.h
+```
+
+Current rule:
+
+```text
+wifi_config.example.h → committed
+wifi_config.h         → local only / ignored by Git
+```
+
+---
+
+## Device display status
+
+The display was cleaned up and now behaves like a small logger instrument panel.
+
+Startup splash screen:
+
+```text
+MOTIONBLOCKS
+LOGGER
+Stofendez Lab
+```
+
+READY screen:
+
+```text
+WiFi <device_ip>
+READY
+SESSION A001
+A x2 START     B NEXT
+```
+
+REC screen:
+
+```text
+REC
+A001 / R1
+SMP <sample_count>
+ACC <acc_norm> g
+A STOP
+```
+
+Display status:
+
+```text
+working / acceptable for prototype
+```
+
+Further visual polishing is not a priority now.
 
 ---
 
@@ -131,6 +312,8 @@ data/raw/EXP01/m5_002/session_A001.csv
 
 The experiment is defined by the folder and metadata, not by the firmware.
 
+Generated data is local and normally ignored by Git.
+
 ---
 
 ## Current metadata files
@@ -140,6 +323,31 @@ Use readable JSON files for manual editing:
 ```text
 data/metadata/experiments.json
 data/metadata/recording_sessions.json
+```
+
+Both loggers can create draft metadata records:
+
+```text
+tools/serial_logger.py
+tools/http_logger.py
+```
+
+Metadata generation is explicit and controlled by:
+
+```powershell
+--create-metadata
+```
+
+Automatically created metadata records use status:
+
+```text
+auto created. needs description.
+```
+
+Important rule:
+
+```text
+Existing metadata records are preserved and not overwritten.
 ```
 
 JSONL may be introduced later for append-only automated logging, but for now readable JSON is preferred.
@@ -279,7 +487,7 @@ Rationale:
 * simple to debug;
 * small CSV files;
 * enough for first motion experiments;
-* easy to transmit over Serial;
+* stable enough for initial HTTP logging;
 * good for idle, walking, slow movements, basic jumps.
 
 Future target rates:
@@ -298,12 +506,13 @@ Adaptive high-rate event-triggered sampling is a future idea, not a current prio
 
 * Use VS Code + PlatformIO + Arduino framework.
 * Use M5StickC Plus2 as the first device.
-* Use Serial / COM6 as the current transport.
 * Use feature branches for meaningful changes.
 * Use `main` as stable branch.
 * Use private GitHub repository at the start.
 * Use raw CSV files for first data collection.
 * Use readable JSON files for metadata.
+* Use Wi-Fi HTTP as the first wireless transport.
+* Keep USB Serial available for debugging.
 * Use SQLite later, after first real data files are collected.
 * Do not store real names of children in repository data or metadata.
 * Use aliases such as:
@@ -314,28 +523,6 @@ child_02
 adult_01
 mentor_01
 ```
-
----
-
-## Transport decision
-
-Current transport:
-
-```text
-M5StickC Plus2 → USB Serial / COM6 → Python logger
-```
-
-Wireless transport is postponed.
-
-Current position:
-
-```text
-First stabilize wired pipeline.
-Then implement Wi-Fi HTTP proof of concept.
-Later introduce MQTT as IoT/event-bus lesson.
-```
-
-MQTT is considered useful for future MotionLink/event-bus architecture, but not as the first wireless protocol.
 
 ---
 
@@ -413,6 +600,9 @@ experiment → device → session/file → attempt/record → rows of data
 * Session-aware IMU logger v0.3 works.
 * Button A start/stop logic works.
 * Button B next-session logic works.
+* Python Serial logger works.
+* Draft metadata generation works.
+* Generated data is ignored by Git.
 * Metadata format agreed:
 
   * `experiments.json`
@@ -420,6 +610,14 @@ experiment → device → session/file → attempt/record → rows of data
 * Raw data path convention agreed:
 
   * `data/raw/[experiment_id]/[device_id]/session_[session_id].csv`
+* Device display layout improved.
+* `wifi_config.example.h` added.
+* Real `wifi_config.h` excluded from Git.
+* Python HTTP logger works.
+* HTTP logger reachable from iPad on local network.
+* M5StickC connects to Wi-Fi.
+* Firmware sends protocol lines over HTTP.
+* Wireless recording works.
 
 ---
 
@@ -432,58 +630,60 @@ feature/first-firmware
 feature/imu-serial-logger
 feature/button-controlled-logger
 feature/session-aware-logger
+feature/python-serial-logger
+feature/display-layout
+feature/wifi-http-logger
 ```
 
-Next branch:
+Current active branch:
 
 ```text
-feature/python-serial-logger
+feature/wifi-http-logger
 ```
 
 ---
 
-## Next actions
+## Current next actions
 
-### 1. Commit current firmware
+### 1. Commit wireless HTTP firmware
 
 Commit message:
 
 ```text
-Add session id to button-controlled logger
+Add Wi-Fi HTTP output to device logger
 ```
 
-### 2. Create Python serial logger branch
+Expected files:
 
 ```text
-feature/python-serial-logger
+firmware/m5stickc-plus2/src/main.cpp
+docs/journal.md
 ```
 
-### 3. Implement Python Serial logger
-
-Expected command:
-
-```powershell
-python tools/serial_logger.py --port COM6 --experiment-id EXP01 --device-id m5_001
-```
-
-Expected output:
+Do not commit:
 
 ```text
-data/raw/EXP01/m5_001/session_A001.csv
-data/raw/EXP01/m5_001/session_A002.csv
+firmware/m5stickc-plus2/src/wifi_config.h
+data/raw/
+data/metadata/
 ```
 
-Logger responsibilities:
+### 2. Update project context files
 
-* listen to COM6;
-* parse `EVENT,NEW_SESSION`;
-* create the proper experiment/device folder;
-* open `session_[session_id].csv`;
-* write START / DATA / STOP rows;
-* flush data safely;
-* close or switch files when session changes.
+Update:
 
-### 4. Collect first real dataset
+```text
+llm/context/project_brief.md
+llm/context/current_state.md
+```
+
+Recommended commit message:
+
+```text
+Update project context after wireless logging milestone
+```
+
+### 3. Collect first real mini-dataset
 
 Initial experiment:
 
@@ -494,13 +694,22 @@ EXP01 — Замеры ординарных движений дома
 Possible sessions:
 
 ```text
-A001 — jumping / jumps_basic
-A002 — walking / walking_normal
-A003 — idle / standing_idle
-A004 — shaking / hand_shaking
+A001 — standing_idle
+A002 — walking_normal
+A003 — hand_shaking
+A004 — jumps_basic
+A005 — sitting_to_standing
 ```
 
-### 5. Basic plotting
+For each session:
+
+```text
+3–5 records
+short controlled movements
+manual metadata review after recording
+```
+
+### 4. Basic plotting
 
 After first CSV files are collected, implement a simple plotting script:
 
@@ -512,11 +721,12 @@ Minimum goal:
 
 * read one session CSV;
 * plot `acc_norm` over time;
-* separate records by `record_id`.
+* separate records by `record_id`;
+* optionally plot `ax/ay/az` and `gx/gy/gz`.
 
 ---
 
-### 6. Planned utility — minimal metadata tool
+## Planned utility — minimal metadata tool
 
 A small metadata utility is planned, but it should remain intentionally limited.
 
@@ -573,7 +783,10 @@ Status:
 ```text
 planned
 ```
-### 7. Planned analysis layer — experimental IMU-only displacement features
+
+---
+
+## Planned analysis layer — experimental IMU-only displacement features
 
 Later we plan to explore experimental derived motion features based on IMU-only trajectory approximation.
 
@@ -583,7 +796,7 @@ Current rule:
 
 ```text
 Device stays simple.
-Serial logger stays simple.
+Serial / HTTP loggers stay simple.
 Trajectory-like features are computed later in Python analysis scripts.
 ```
 
@@ -673,15 +886,19 @@ fall_like
 
 Then evaluate whether displacement-like metrics are actually useful.
 
+---
 
 ## Open questions
 
-* Should Python logger create draft metadata records automatically?
-* Should metadata be updated manually first, or generated by logger with `status = needs_description`?
+* How stable is HTTP POST at 10 Hz during real wrist motion?
+* Do we need batching or buffering on the device?
+* What is the practical battery life in Wi-Fi logging mode?
+* Should Python logger update `records_actual` automatically after STOP?
+* Should metadata contain connection / transport information?
 * Should `channels` be repeated in each recording session or moved to a shared schema/device registry?
 * Should events and DATA rows live in the same CSV, or should event logs be separated later?
 * Should `device_id` ever be stored in firmware, or always supplied by the logger?
 * When should SQLite be introduced?
-* When should Wi-Fi HTTP proof of concept be introduced?
 * When should MQTT be introduced as a separate IoT lesson?
 * Should Button A double click remain the start action, or should UX be simplified to start/stop toggle later?
+* When should 25 Hz / 50 Hz modes be introduced?
