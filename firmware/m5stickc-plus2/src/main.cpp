@@ -92,69 +92,139 @@ void sendNewSessionEvent() {
     Serial.println(millis());
 }
 
+// ------------------------------------------------------------
+// Выводит надпись LOGGER
+// ------------------------------------------------------------
+
+void drawVerticalLoggerLabel() {
+    M5.Display.setTextDatum(top_left);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(DARKGREY, BLACK);
+
+    int x = 5;
+    int y = 16;
+    int step = 14;
+
+    M5.Display.drawString("L", x, y + step * 0);
+    M5.Display.drawString("O", x, y + step * 1);
+    M5.Display.drawString("G", x, y + step * 2);
+    M5.Display.drawString("G", x, y + step * 3);
+    M5.Display.drawString("E", x, y + step * 4);
+    M5.Display.drawString("R", x, y + step * 5);
+}
+
+
+// ------------------------------------------------------------
+// Экран Заставки
+// ------------------------------------------------------------
+void showSplashScreen() {
+    M5.Display.fillScreen(BLACK);
+    M5.Display.setTextDatum(middle_center);
+
+    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("MOTIONBLOCKS", 120, 38);
+
+    M5.Display.setTextColor(GREEN, BLACK);
+    M5.Display.setTextSize(3);
+    M5.Display.drawString("LOGGER", 120, 72);
+
+    M5.Display.setTextColor(LIGHTGREY, BLACK);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString("Stofendez Lab", 120, 108);
+
+    delay(3000);
+
+    M5.Display.setTextDatum(top_left);
+}
 
 // ------------------------------------------------------------
 // Экран IDLE
 // ------------------------------------------------------------
 void drawIdleScreen() {
-    char session_id[8];
-    getSessionId(session_id, sizeof(session_id));
-
     M5.Display.fillScreen(BLACK);
-    M5.Display.setRotation(1);
+    M5.Display.setTextDatum(top_left);
+
+    drawVerticalLoggerLabel();
+
+    const int x = 34;
+
+    // Main status
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(GREEN, BLACK);
+    M5.Display.drawString("READY", x, 16);
+
+    // Session block
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(LIGHTGREY, BLACK);
+    M5.Display.drawString("SESSION", x, 62);
 
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(5, 5);
-    M5.Display.println("MotionBlocks");
-
+    M5.Display.setTextColor(WHITE, BLACK);
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+    M5.Display.drawString(session_id, x, 78);
+    // Button hints
     M5.Display.setTextSize(1);
-    M5.Display.println("IMU logger v0.3");
-
-    M5.Display.setCursor(5, 40);
-    M5.Display.printf("SESSION: %s\n", session_id);
-
-    M5.Display.setCursor(5, 60);
-    M5.Display.println("Status: IDLE");
-
-    M5.Display.setCursor(5, 80);
-    M5.Display.printf("Next REC: #%lu\n", record_id);
-
-    M5.Display.setCursor(5, 105);
-    M5.Display.println("A x2: start");
-    M5.Display.println("B: next session");
+    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.drawString("A x2 START", x, 116);
+    M5.Display.drawString("B NEXT", 145, 116);
 }
 
 
 // ------------------------------------------------------------
 // Экран записи
 // ------------------------------------------------------------
-void drawRecordingScreen() {
+void drawRecordingScreen(float acc_norm) {
+    M5.Display.fillScreen(BLACK);
+    M5.Display.setTextDatum(top_left);
+
+    drawVerticalLoggerLabel();
+
+    const int x = 34;
+
+    // REC status
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(RED, BLACK);
+    M5.Display.drawString("REC", x, 8);
+
+    M5.Display.fillCircle(x + 82, 22, 7, RED);
+
+    // Session / record
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(WHITE, BLACK);
+
+
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    M5.Display.fillScreen(BLACK);
-    M5.Display.setRotation(1);
+
+    String recordText = String(session_id) + " / R" + String(record_id);
+    M5.Display.drawString(recordText, x, 44);
+
+    // Samples block — aligned left
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(LIGHTGREY, BLACK);
+    M5.Display.drawString("SAMPLES", x, 73);
 
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(5, 5);
-    M5.Display.println("MotionBlocks");
+    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.drawString(String(sample_count), x, 87);
 
+    // Acc block — aligned left
     M5.Display.setTextSize(1);
-    M5.Display.println("Recording");
+    M5.Display.setTextColor(LIGHTGREY, BLACK);
+    M5.Display.drawString("ACC", 135, 73);
 
-    M5.Display.setCursor(5, 40);
-    M5.Display.printf("SESSION: %s\n", session_id);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.drawString(String(acc_norm, 2) + "g", 135, 87);
 
-    M5.Display.setCursor(5, 60);
-    M5.Display.printf("REC #%lu\n", record_id);
-
-    M5.Display.setCursor(5, 80);
-    M5.Display.printf("samples: %lu\n", sample_count);
-
-    M5.Display.setCursor(5, 105);
-    M5.Display.println("A: stop");
+    // Button hint
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.drawString("A STOP", x, 116);
 }
-
 
 // ------------------------------------------------------------
 // Запуск записи
@@ -175,7 +245,7 @@ void startRecord() {
     Serial.print(",");
     Serial.println(millis());
 
-    drawRecordingScreen();
+    drawRecordingScreen(0.0f);
 }
 
 
@@ -380,6 +450,9 @@ void sendImuSample() {
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
+    M5.Display.setRotation(1);
+
+    showSplashScreen();
 
     Serial.begin(115200);
     delay(500);
