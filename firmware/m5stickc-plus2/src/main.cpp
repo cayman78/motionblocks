@@ -1,4 +1,6 @@
 #include <M5Unified.h>
+#include <WiFi.h>          // Wi-Fi подключение ESP32 к локальной сети
+#include "wifi_config.h"   // локальные Wi-Fi настройки: WIFI_SSID, WIFI_PASSWORD, LOGGER_URL
 #include <math.h>
 
 // ============================================================
@@ -10,6 +12,12 @@
 // - Button A double click запускает запись;
 // - Button A single click во время записи останавливает запись;
 // - experiment_id, device_id, subject_id прошивка НЕ знает.
+//
+// Текущий этап:
+// - Serial-протокол сохранён;
+// - добавлено Wi-Fi подключение;
+// - в READY-экране отображается Wi-Fi status / IP;
+// - HTTP-отправка данных ещё НЕ добавлена.
 //
 // Serial-протокол:
 //
@@ -35,10 +43,7 @@ static const uint32_t DOUBLE_CLICK_WINDOW_MS = 400;
 // ------------------------------------------------------------
 // Цвета
 // ------------------------------------------------------------
-//
-// Некоторые цвета уже могут быть определены в M5Unified,
-// но свои имена безопаснее и понятнее для layout-кода.
-// ------------------------------------------------------------
+
 static const uint16_t MB_BLACK = BLACK;
 static const uint16_t MB_WHITE = WHITE;
 static const uint16_t MB_GREEN = GREEN;
@@ -54,6 +59,7 @@ static const uint16_t MB_DARKGREY = 0x7BEF;
 // Экран M5StickC Plus2 в landscape после setRotation(1):
 // примерно 240 x 135.
 // ------------------------------------------------------------
+
 static const int SCREEN_W = 240;
 static const int SCREEN_H = 135;
 
@@ -65,27 +71,15 @@ static const int MAIN_X = 34;
 // Состояние сессии / записи
 // ------------------------------------------------------------
 
-// Номер текущей сессии.
-// На экране и в Serial будет отображаться как A001, A002, A003...
 uint32_t session_number = 1;
-
-// Номер текущей попытки внутри сессии.
 uint32_t record_id = 1;
-
-// Номер сэмпла внутри текущей попытки.
 uint32_t sample_id = 0;
-
-// Количество сэмплов внутри текущей попытки.
 uint32_t sample_count = 0;
 
-// Идёт ли сейчас запись.
 bool is_recording = false;
 
-// Время последнего сэмпла.
 uint32_t last_sample_ms = 0;
 
-// Последнее значение нормы ускорения.
-// Нужно только для отображения на экране.
 float last_acc_norm = 0.0f;
 
 
@@ -93,10 +87,7 @@ float last_acc_norm = 0.0f;
 // Состояние кнопок
 // ------------------------------------------------------------
 
-// Время первого клика Button A.
 uint32_t last_click_ms = 0;
-
-// Ждём ли второй клик Button A для double click.
 bool waiting_for_second_click = false;
 
 
@@ -107,14 +98,33 @@ bool waiting_for_second_click = false;
 // session_number = 2  -> A002
 // session_number = 15 -> A015
 // ------------------------------------------------------------
+
 void getSessionId(char* buffer, size_t buffer_size) {
     snprintf(buffer, buffer_size, "A%03lu", session_number);
 }
 
 
 // ------------------------------------------------------------
-// Отправка события NEW_SESSION
+// Wi-Fi status text
+//
+// Используется на READY-экране.
+// Если Wi-Fi подключён, показываем IP.
+// Если нет — показываем WiFi OFF.
 // ------------------------------------------------------------
+
+String getWifiStatusText() {
+    if (WiFi.status() == WL_CONNECTED) {
+        return "WiFi " + WiFi.localIP().toString();
+    }
+
+    return "WiFi OFF";
+}
+
+
+// ------------------------------------------------------------
+// Отправка события NEW_SESSION в Serial
+// ------------------------------------------------------------
+
 void sendNewSessionEvent() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
@@ -128,11 +138,8 @@ void sendNewSessionEvent() {
 
 // ------------------------------------------------------------
 // Экран: вертикальная надпись LOGGER
-//
-// Важно:
-// Не вращаем текст через setRotation.
-// Просто рисуем буквы столбиком — это устойчивее.
 // ------------------------------------------------------------
+
 void drawVerticalLoggerLabel() {
     M5.Display.setTextDatum(top_left);
     M5.Display.setTextSize(2);
@@ -154,6 +161,7 @@ void drawVerticalLoggerLabel() {
 // ------------------------------------------------------------
 // Экран заставки
 // ------------------------------------------------------------
+
 void showSplashScreen() {
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(middle_center);
@@ -177,8 +185,107 @@ void showSplashScreen() {
 
 
 // ------------------------------------------------------------
+// Экран Wi-Fi connection
+// ------------------------------------------------------------
+
+void drawWifiConnectingScreen() {
+    M5.Display.fillScreen(MB_BLACK);
+    M5.Display.setTextDatum(top_left);
+
+    drawVerticalLoggerLabel();
+
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("Wi-Fi", MAIN_X, 22);
+
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.drawString("Connecting...", MAIN_X, 58);
+}
+
+
+void drawWifiOkScreen() {
+    M5.Display.fillScreen(MB_BLACK);
+    M5.Display.setTextDatum(top_left);
+
+    drawVerticalLoggerLabel();
+
+    M5.Display.setTextColor(MB_GREEN, MB_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("Wi-Fi OK", MAIN_X, 22);
+
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString(WiFi.localIP().toString(), MAIN_X, 58);
+
+    delay(2000);
+}
+
+
+void drawWifiFailScreen() {
+    M5.Display.fillScreen(MB_BLACK);
+    M5.Display.setTextDatum(top_left);
+
+    drawVerticalLoggerLabel();
+
+    M5.Display.setTextColor(MB_RED, MB_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString("Wi-Fi FAIL", MAIN_X, 22);
+
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString("Check wifi_config.h", MAIN_X, 58);
+
+    delay(3000);
+}
+
+
+// ------------------------------------------------------------
+// Подключение к Wi-Fi
+//
+// Пока это только подключение.
+// HTTP POST отправку добавим следующим шагом.
+// ------------------------------------------------------------
+
+void connectToWifi() {
+    Serial.println();
+    Serial.println("Connecting to Wi-Fi...");
+    Serial.print("SSID: ");
+    Serial.println(WIFI_SSID);
+
+    drawWifiConnectingScreen();
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    uint32_t start_ms = millis();
+    const uint32_t timeout_ms = 15000;
+
+    while (WiFi.status() != WL_CONNECTED && millis() - start_ms < timeout_ms) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Wi-Fi connected.");
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+
+        drawWifiOkScreen();
+        return;
+    }
+
+    Serial.println("Wi-Fi connection failed.");
+    drawWifiFailScreen();
+}
+
+
+// ------------------------------------------------------------
 // Экран IDLE / READY
 // ------------------------------------------------------------
+
 void drawIdleScreen() {
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
@@ -188,19 +295,24 @@ void drawIdleScreen() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
+    // Wi-Fi status / IP address
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.drawString(getWifiStatusText(), MAIN_X, 4);
+
     // Главный статус
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(MB_GREEN, MB_BLACK);
-    M5.Display.drawString("READY", MAIN_X, 12);
+    M5.Display.drawString("READY", MAIN_X, 22);
 
     // Сессия
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.drawString("SESSION", MAIN_X, 58);
+    M5.Display.drawString("SESSION", MAIN_X, 66);
 
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.drawString(session_id, MAIN_X, 84);
+    M5.Display.drawString(session_id, MAIN_X, 90);
 
     // Подсказки по кнопкам
     M5.Display.setTextSize(1);
@@ -212,17 +324,15 @@ void drawIdleScreen() {
 
 // ------------------------------------------------------------
 // Обновление числовых значений на REC-экране
-//
-// Обновляем только центральную область, не весь экран.
-// Так меньше мерцания и нет наложения старого текста.
 // ------------------------------------------------------------
+
 void updateRecordingValues(float acc_norm) {
     M5.Display.setTextDatum(top_left);
 
     // Чистим только область с метриками.
     M5.Display.fillRect(MAIN_X, 70, 200, 48, MB_BLACK);
 
-    // Строка SAMPLES
+    // Строка SMP
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("SMP", MAIN_X, 74);
@@ -239,6 +349,7 @@ void updateRecordingValues(float acc_norm) {
 // ------------------------------------------------------------
 // Экран записи
 // ------------------------------------------------------------
+
 void drawRecordingScreen(float acc_norm) {
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
@@ -274,6 +385,7 @@ void drawRecordingScreen(float acc_norm) {
 // ------------------------------------------------------------
 // Запуск записи
 // ------------------------------------------------------------
+
 void startRecord() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
@@ -298,6 +410,7 @@ void startRecord() {
 // ------------------------------------------------------------
 // Остановка записи
 // ------------------------------------------------------------
+
 void stopRecord() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
@@ -322,12 +435,8 @@ void stopRecord() {
 
 // ------------------------------------------------------------
 // Переход к следующей сессии
-//
-// Важно:
-// - если запись идёт, Button B игнорируется;
-// - при переходе к новой сессии record_id снова начинается с 1;
-// - прошивка не знает, в какой experiment попадёт сессия.
 // ------------------------------------------------------------
+
 void nextSession() {
     if (is_recording) {
         return;
@@ -354,6 +463,7 @@ void nextSession() {
 // Если запись не идёт:
 //   двойной клик A = start
 // ------------------------------------------------------------
+
 void handleButtonA() {
     if (!M5.BtnA.wasClicked()) {
         return;
@@ -390,6 +500,7 @@ void handleButtonA() {
 //
 // Button B = перейти к следующей сессии.
 // ------------------------------------------------------------
+
 void handleButtonB() {
     if (M5.BtnB.wasClicked()) {
         nextSession();
@@ -400,6 +511,7 @@ void handleButtonB() {
 // ------------------------------------------------------------
 // Сброс ожидания второго клика Button A
 // ------------------------------------------------------------
+
 void handleClickTimeout() {
     if (!waiting_for_second_click) {
         return;
@@ -414,8 +526,9 @@ void handleClickTimeout() {
 
 
 // ------------------------------------------------------------
-// Чтение IMU и отправка строки DATA
+// Чтение IMU и отправка строки DATA в Serial
 // ------------------------------------------------------------
+
 void sendImuSample() {
     uint32_t now = millis();
 
@@ -493,6 +606,7 @@ void sendImuSample() {
 // ------------------------------------------------------------
 // setup()
 // ------------------------------------------------------------
+
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
@@ -519,6 +633,10 @@ void setup() {
     Serial.println("DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm");
     Serial.println("EVENT,STOP,session_id,record_id,timestamp_ms,sample_count");
 
+    // Подключаемся к Wi-Fi.
+    // Пока данные по HTTP не отправляем.
+    connectToWifi();
+
     // Сообщаем компьютеру стартовую сессию A001.
     sendNewSessionEvent();
 
@@ -529,6 +647,7 @@ void setup() {
 // ------------------------------------------------------------
 // loop()
 // ------------------------------------------------------------
+
 void loop() {
     M5.update();
 
