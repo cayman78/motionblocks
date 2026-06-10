@@ -271,5 +271,525 @@
       "orientation",
       "imu"
     ]
+  },
+  {
+    "experiment_id": "EXP01",
+    "device_id": "m5_001",
+    "session_id": "A006",
+    "session_uid": "EXP01_m5_001_A006",
+    "file_id": 6,
+    "file_name": "session_A006.csv",
+    "file_path": "data/raw/EXP01/m5_001/session_A006.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:28:16",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP01",
+    "device_id": "m5_001",
+    "session_id": "A007",
+    "session_uid": "EXP01_m5_001_A007",
+    "file_id": 7,
+    "file_name": "session_A007.csv",
+    "file_path": "data/raw/EXP01/m5_001/session_A007.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:28:30",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP01",
+    "device_id": "m5_001",
+    "session_id": "A008",
+    "session_uid": "EXP01_m5_001_A008",
+    "file_id": 8,
+    "file_name": "session_A008.csv",
+    "file_path": "data/raw/EXP01/m5_001/session_A008.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:28:31",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP01",
+    "device_id": "m5_001",
+    "session_id": "A009",
+    "session_uid": "EXP01_m5_001_A009",
+    "file_id": 9,
+    "file_name": "session_A009.csv",
+    "file_path": "data/raw/EXP01/m5_001/session_A009.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:28:31",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP03",
+    "device_id": "m5_001",
+    "session_id": "A009",
+    "session_uid": "EXP03_m5_001_A009",
+    "file_id": 9,
+    "file_name": "session_A009.csv",
+    "file_path": "data/raw/EXP03/m5_001/session_A009.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:30:56",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP03",
+    "device_id": "m5_001",
+    "session_id": "A010",
+    "session_uid": "EXP03_m5_001_A010",
+    "file_id": 10,
+    "file_name": "session_A010.csv",
+    "file_path": "data/raw/EXP03/m5_001/session_A010.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:31:15",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP03",
+    "device_id": "m5_001",
+    "session_id": "A011",
+    "session_uid": "EXP03_m5_001_A011",
+    "file_id": 11,
+    "file_name": "session_A011.csv",
+    "file_path": "data/raw/EXP03/m5_001/session_A011.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:31:15",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP03",
+    "device_id": "m5_001",
+    "session_id": "A012",
+    "session_uid": "EXP03_m5_001_A012",
+    "file_id": 12,
+    "file_name": "session_A012.csv",
+    "file_path": "data/raw/EXP03/m5_001/session_A012.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-10T18:31:16",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
   }
 ]
