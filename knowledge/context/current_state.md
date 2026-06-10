@@ -516,6 +516,164 @@ Minimum goal:
 
 ---
 
+### 6. Planned utility — minimal metadata tool
+
+A small metadata utility is planned, but it should remain intentionally limited.
+
+Purpose:
+
+* inspect existing experiments;
+* inspect recording sessions;
+* find sessions that still need description;
+* check consistency between metadata and raw CSV files;
+* mark unnecessary or bad sessions without physically deleting data.
+
+Working name:
+
+```text
+tools/metadata_tool.py
+```
+
+Initial commands:
+
+```text
+list-experiments
+list-sessions --experiment-id EXP01
+list-sessions --status "auto created. needs description."
+show-session --session-uid EXP01_m5_001_A001
+mark-session --session-uid EXP01_m5_001_A001 --status bad
+check-files
+```
+
+Current boundary:
+
+```text
+This is not a database layer.
+This is not a GUI browser.
+This is not a full data management application.
+```
+
+Do not implement yet:
+
+* physical deletion of CSV files;
+* interactive UI;
+* full metadata editor;
+* complex search;
+* schema migrations.
+
+Rationale:
+
+The current JSON-based metadata layer is temporary and lightweight.
+For serious data management, a database will be more appropriate later.
+
+The utility should only reduce manual friction while we are still collecting early prototype data.
+
+Status:
+
+```text
+planned
+```
+### 7. Planned analysis layer — experimental IMU-only displacement features
+
+Later we plan to explore experimental derived motion features based on IMU-only trajectory approximation.
+
+This should not be implemented in firmware now.
+
+Current rule:
+
+```text
+Device stays simple.
+Serial logger stays simple.
+Trajectory-like features are computed later in Python analysis scripts.
+```
+
+Possible future script:
+
+```text
+tools/compute_features.py
+```
+
+Possible output:
+
+```text
+data/features/[experiment_id]/[device_id]/session_[session_id]_features.json
+```
+
+or:
+
+```text
+data/processed/[experiment_id]/[device_id]/session_[session_id]_features.csv
+```
+
+The goal is not to reconstruct the true physical trajectory with high precision.
+
+The goal is to compute experimental metrics that may correlate with fall-like events:
+
+```text
+estimated_path_length
+estimated_displacement_norm
+estimated_vertical_displacement
+vertical_drop_score
+peak_velocity_estimate
+impact_after_drop_score
+```
+
+Basic idea:
+
+```text
+For each record:
+  velocity = 0 at record start
+  position = 0 at record start
+  estimate initial gravity from first samples
+  estimate orientation from gyro integration
+  transform acceleration to approximate world frame
+  subtract gravity
+  integrate acceleration to velocity
+  integrate velocity to position
+  compute displacement/path metrics
+```
+
+Important limitation:
+
+```text
+These are experimental IMU-only estimates.
+They are not reliable physical coordinates.
+They may drift due to sensor bias, gravity compensation error, and orientation error.
+```
+
+Reason for still keeping this idea:
+
+```text
+Even noisy displacement-like metrics may be useful as weak features for fall-like classification, especially for short records reset at each record_id.
+```
+
+Implementation status:
+
+```text
+planned / future
+```
+
+Do not implement yet:
+
+* on-device trajectory calculation;
+* firmware-side orientation tracking;
+* real-time fall detection;
+* use of displacement estimate as a single decisive fall signal.
+
+Next step before implementation:
+
+```text
+Collect labeled examples first:
+idle
+walking
+jumping
+shaking
+fall_like
+```
+
+Then evaluate whether displacement-like metrics are actually useful.
+
+
 ## Open questions
 
 * Should Python logger create draft metadata records automatically?
