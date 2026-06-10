@@ -1110,6 +1110,134 @@ Confirmed:
 Add draft metadata generation to serial logger
 ```
 
+## 2026-06-10 — Device logger display layout update
+
+### Context
+
+After implementing the session-aware firmware and Python Serial logger, we reviewed the on-device display layout on M5StickC Plus2.
+
+The previous display was functional but hard to read:
+
+* text was too small;
+* `IDLE` and `REC` screens used different visual structure;
+* too much information was shown at once;
+* during early layout experiments, old `samples` / `acc` text overlapped with the new `REC` screen.
+
+### Design decision
+
+The device screen should behave like a small instrument panel, not like a full dashboard.
+
+Working principle:
+
+```text
+one screen = one main purpose
+```
+
+For the idle screen:
+
+```text
+READY / current session / button hints
+```
+
+For the recording screen:
+
+```text
+REC / session + record / samples / acceleration norm / stop hint
+```
+
+The project name should not occupy working screen space.
+Instead, project identity is shown on a short splash screen.
+
+### Implemented changes
+
+Added a splash screen shown at startup:
+
+```text
+MOTIONBLOCKS
+LOGGER
+Stofendez Lab
+```
+
+The splash screen is shown for approximately 3 seconds.
+
+Added fixed landscape display orientation:
+
+```cpp
+M5.Display.setRotation(1);
+```
+
+If needed, it can be changed to:
+
+```cpp
+M5.Display.setRotation(3);
+```
+
+Added a vertical `LOGGER` label on the left side of working screens.
+
+Updated `READY` screen:
+
+```text
+LOGGER | READY
+       | SESSION
+       | A001
+       | A x2 START     B NEXT
+```
+
+Updated `REC` screen:
+
+```text
+LOGGER | REC ●
+       | A001 / R1
+       | SMP  <sample_count>
+       | ACC  <acc_norm> g
+       | A STOP
+```
+
+### Important cleanup
+
+Removed old direct screen drawing from `sendImuSample()`:
+
+```cpp
+M5.Display.fillRect(...)
+M5.Display.printf("samples: ...")
+M5.Display.printf("acc: ...")
+```
+
+This old code was causing text overlap on the new `REC` screen.
+
+The screen is now updated through dedicated display functions.
+
+### Result
+
+Confirmed:
+
+```text
+[✓] Firmware builds
+[✓] Firmware uploads to M5StickC Plus2
+[✓] Splash screen appears on startup
+[✓] READY screen is readable
+[✓] REC screen is readable
+[✓] samples and acc values no longer overlap
+[✓] Serial protocol remains unchanged
+[✓] Recording logic remains unchanged
+[✓] Python logger compatibility remains unchanged
+```
+
+### Current position
+
+The display is now acceptable for the current prototype.
+
+Further visual polishing can be done later, but the next priority should remain the data pipeline:
+
+```text
+collect first real dataset → complete metadata → plot session data
+```
+
+### Recommended commit message
+
+```text
+Improve device logger display layout
+```
 
 
 

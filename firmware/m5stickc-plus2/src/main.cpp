@@ -33,6 +33,35 @@ static const uint32_t DOUBLE_CLICK_WINDOW_MS = 400;
 
 
 // ------------------------------------------------------------
+// Цвета
+// ------------------------------------------------------------
+//
+// Некоторые цвета уже могут быть определены в M5Unified,
+// но свои имена безопаснее и понятнее для layout-кода.
+// ------------------------------------------------------------
+static const uint16_t MB_BLACK = BLACK;
+static const uint16_t MB_WHITE = WHITE;
+static const uint16_t MB_GREEN = GREEN;
+static const uint16_t MB_RED = RED;
+static const uint16_t MB_GREY = 0xC618;
+static const uint16_t MB_DARKGREY = 0x7BEF;
+
+
+// ------------------------------------------------------------
+// Координаты layout
+// ------------------------------------------------------------
+//
+// Экран M5StickC Plus2 в landscape после setRotation(1):
+// примерно 240 x 135.
+// ------------------------------------------------------------
+static const int SCREEN_W = 240;
+static const int SCREEN_H = 135;
+
+static const int RAIL_X = 5;
+static const int MAIN_X = 34;
+
+
+// ------------------------------------------------------------
 // Состояние сессии / записи
 // ------------------------------------------------------------
 
@@ -54,6 +83,10 @@ bool is_recording = false;
 
 // Время последнего сэмпла.
 uint32_t last_sample_ms = 0;
+
+// Последнее значение нормы ускорения.
+// Нужно только для отображения на экране.
+float last_acc_norm = 0.0f;
 
 
 // ------------------------------------------------------------
@@ -92,18 +125,22 @@ void sendNewSessionEvent() {
     Serial.println(millis());
 }
 
-// ------------------------------------------------------------
-// Выводит надпись LOGGER
-// ------------------------------------------------------------
 
+// ------------------------------------------------------------
+// Экран: вертикальная надпись LOGGER
+//
+// Важно:
+// Не вращаем текст через setRotation.
+// Просто рисуем буквы столбиком — это устойчивее.
+// ------------------------------------------------------------
 void drawVerticalLoggerLabel() {
     M5.Display.setTextDatum(top_left);
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(DARKGREY, BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
 
-    int x = 5;
-    int y = 16;
-    int step = 14;
+    int x = RAIL_X;
+    int y = 8;
+    int step = 20;
 
     M5.Display.drawString("L", x, y + step * 0);
     M5.Display.drawString("O", x, y + step * 1);
@@ -115,60 +152,87 @@ void drawVerticalLoggerLabel() {
 
 
 // ------------------------------------------------------------
-// Экран Заставки
+// Экран заставки
 // ------------------------------------------------------------
 void showSplashScreen() {
-    M5.Display.fillScreen(BLACK);
+    M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(middle_center);
 
-    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.setTextSize(2);
-    M5.Display.drawString("MOTIONBLOCKS", 120, 38);
+    M5.Display.drawString("MOTIONBLOCKS", SCREEN_W / 2, 36);
 
-    M5.Display.setTextColor(GREEN, BLACK);
+    M5.Display.setTextColor(MB_GREEN, MB_BLACK);
     M5.Display.setTextSize(3);
-    M5.Display.drawString("LOGGER", 120, 72);
+    M5.Display.drawString("LOGGER", SCREEN_W / 2, 72);
 
-    M5.Display.setTextColor(LIGHTGREY, BLACK);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
     M5.Display.setTextSize(1);
-    M5.Display.drawString("Stofendez Lab", 120, 108);
+    M5.Display.drawString("Stofendez Lab", SCREEN_W / 2, 110);
 
     delay(3000);
 
     M5.Display.setTextDatum(top_left);
 }
 
+
 // ------------------------------------------------------------
-// Экран IDLE
+// Экран IDLE / READY
 // ------------------------------------------------------------
 void drawIdleScreen() {
-    M5.Display.fillScreen(BLACK);
+    M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
 
     drawVerticalLoggerLabel();
 
-    const int x = 34;
-
-    // Main status
-    M5.Display.setTextSize(3);
-    M5.Display.setTextColor(GREEN, BLACK);
-    M5.Display.drawString("READY", x, 16);
-
-    // Session block
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(LIGHTGREY, BLACK);
-    M5.Display.drawString("SESSION", x, 62);
-
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(WHITE, BLACK);
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
-    M5.Display.drawString(session_id, x, 78);
-    // Button hints
+
+    // Главный статус
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(MB_GREEN, MB_BLACK);
+    M5.Display.drawString("READY", MAIN_X, 12);
+
+    // Сессия
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString("SESSION", MAIN_X, 58);
+
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString(session_id, MAIN_X, 84);
+
+    // Подсказки по кнопкам
     M5.Display.setTextSize(1);
-    M5.Display.setTextColor(WHITE, BLACK);
-    M5.Display.drawString("A x2 START", x, 116);
-    M5.Display.drawString("B NEXT", 145, 116);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString("A x2 START", MAIN_X, 122);
+    M5.Display.drawString("B NEXT", 150, 122);
+}
+
+
+// ------------------------------------------------------------
+// Обновление числовых значений на REC-экране
+//
+// Обновляем только центральную область, не весь экран.
+// Так меньше мерцания и нет наложения старого текста.
+// ------------------------------------------------------------
+void updateRecordingValues(float acc_norm) {
+    M5.Display.setTextDatum(top_left);
+
+    // Чистим только область с метриками.
+    M5.Display.fillRect(MAIN_X, 70, 200, 48, MB_BLACK);
+
+    // Строка SAMPLES
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString("SMP", MAIN_X, 74);
+    M5.Display.drawString(String(sample_count), 96, 74);
+
+    // Строка ACC
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString("ACC", MAIN_X, 98);
+    M5.Display.drawString(String(acc_norm, 2) + " g", 96, 98);
 }
 
 
@@ -176,55 +240,36 @@ void drawIdleScreen() {
 // Экран записи
 // ------------------------------------------------------------
 void drawRecordingScreen(float acc_norm) {
-    M5.Display.fillScreen(BLACK);
+    M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
 
     drawVerticalLoggerLabel();
 
-    const int x = 34;
-
-    // REC status
-    M5.Display.setTextSize(3);
-    M5.Display.setTextColor(RED, BLACK);
-    M5.Display.drawString("REC", x, 8);
-
-    M5.Display.fillCircle(x + 82, 22, 7, RED);
-
-    // Session / record
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(WHITE, BLACK);
-
-
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
+    // REC status
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(MB_RED, MB_BLACK);
+    M5.Display.drawString("REC", MAIN_X, 6);
+    M5.Display.fillCircle(MAIN_X + 88, 24, 7, MB_RED);
+
+    // Session / record
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
 
     String recordText = String(session_id) + " / R" + String(record_id);
-    M5.Display.drawString(recordText, x, 44);
+    M5.Display.drawString(recordText, MAIN_X, 44);
 
-    // Samples block — aligned left
+    // Метрики
+    updateRecordingValues(acc_norm);
+
+    // Подсказка по кнопке
     M5.Display.setTextSize(1);
-    M5.Display.setTextColor(LIGHTGREY, BLACK);
-    M5.Display.drawString("SAMPLES", x, 73);
-
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(WHITE, BLACK);
-    M5.Display.drawString(String(sample_count), x, 87);
-
-    // Acc block — aligned left
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(LIGHTGREY, BLACK);
-    M5.Display.drawString("ACC", 135, 73);
-
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(WHITE, BLACK);
-    M5.Display.drawString(String(acc_norm, 2) + "g", 135, 87);
-
-    // Button hint
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(WHITE, BLACK);
-    M5.Display.drawString("A STOP", x, 116);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString("A STOP", MAIN_X, 122);
 }
+
 
 // ------------------------------------------------------------
 // Запуск записи
@@ -236,6 +281,7 @@ void startRecord() {
     is_recording = true;
     sample_id = 0;
     sample_count = 0;
+    last_acc_norm = 0.0f;
     last_sample_ms = millis();
 
     Serial.print("EVENT,START,");
@@ -245,7 +291,7 @@ void startRecord() {
     Serial.print(",");
     Serial.println(millis());
 
-    drawRecordingScreen(0.0f);
+    drawRecordingScreen(last_acc_norm);
 }
 
 
@@ -291,6 +337,7 @@ void nextSession() {
     record_id = 1;
     sample_id = 0;
     sample_count = 0;
+    last_acc_norm = 0.0f;
     waiting_for_second_click = false;
 
     sendNewSessionEvent();
@@ -404,6 +451,7 @@ void sendImuSample() {
     float gz = data.gyro.z;
 
     float acc_norm = sqrt(ax * ax + ay * ay + az * az);
+    last_acc_norm = acc_norm;
 
     sample_id++;
     sample_count++;
@@ -434,12 +482,10 @@ void sendImuSample() {
     Serial.print(",");
     Serial.println(acc_norm, 4);
 
-    // Обновляем экран не на каждом сэмпле, чтобы не было лишнего мерцания.
-    if (sample_count % 5 == 0) {
-        M5.Display.fillRect(0, 80, 240, 25, BLACK);
-        M5.Display.setCursor(5, 80);
-        M5.Display.printf("samples: %lu\n", sample_count);
-        M5.Display.printf("acc: %.2f g\n", acc_norm);
+    // Экран обновляем не на каждом сэмпле, а примерно 2 раза в секунду.
+    // При sample_count == 1 обновляем сразу, чтобы не висел ноль.
+    if (sample_count == 1 || sample_count % 5 == 0) {
+        updateRecordingValues(acc_norm);
     }
 }
 
@@ -450,7 +496,16 @@ void sendImuSample() {
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
+
+    // Фиксируем landscape-ориентацию.
+    // Если экран окажется вверх ногами — заменить 1 на 3.
     M5.Display.setRotation(1);
+
+    M5.Display.setBrightness(80);
+    M5.Display.setTextFont(1);
+    M5.Display.setTextDatum(top_left);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.fillScreen(MB_BLACK);
 
     showSplashScreen();
 
