@@ -1239,6 +1239,125 @@ collect first real dataset → complete metadata → plot session data
 Improve device logger display layout
 ```
 
+## 2026-06-10 — HTTP logger receiver
+
+### Context
+
+Started the transition from wired Serial logging to wireless data collection.
+
+The current Serial-based pipeline works, but it limits real motion experiments because the device must remain connected by USB cable.
+
+Next goal:
+
+```text
+M5StickC Plus2 → Wi-Fi → Python HTTP logger → CSV / metadata
+```
+
+### Implemented
+
+Added first version of the Python HTTP logger:
+
+```text
+tools/http_logger.py
+```
+
+The logger starts a local HTTP server and accepts MotionBlocks protocol lines through:
+
+```text
+POST /line
+```
+
+Health check endpoint:
+
+```text
+GET /health
+```
+
+The HTTP logger uses the same protocol lines as the Serial logger:
+
+```csv
+EVENT,NEW_SESSION,session_id,timestamp_ms
+EVENT,START,session_id,record_id,timestamp_ms
+DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+```
+
+This keeps the data format stable while changing only the transport layer.
+
+### Run command
+
+From the repository root:
+
+```powershell
+python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --device-id m5_001 --create-metadata
+```
+
+### Tested
+
+Local health check works:
+
+```text
+http://localhost:8080/health
+```
+
+Health check by notebook Wi-Fi IP works:
+
+```text
+http://192.168.8.129:8080/health
+```
+
+External access from iPad also works after changing the Windows network profile to:
+
+```text
+Private network
+```
+
+### Important network note
+
+For other devices in the same Wi-Fi network to reach the Python HTTP logger, Windows must allow inbound connections.
+
+Current finding:
+
+```text
+If Windows network profile is Public, iPad cannot reach the logger.
+If Windows network profile is Private, iPad can reach the logger.
+```
+
+### Result
+
+Confirmed:
+
+```text
+[✓] HTTP logger starts
+[✓] GET /health works locally
+[✓] GET /health works through notebook Wi-Fi IP
+[✓] GET /health works from iPad in the same network
+[✓] Windows Private network profile fixes external access
+[✓] Logger is ready for M5StickC Wi-Fi client testing
+```
+
+### Next step
+
+Add Wi-Fi configuration for firmware:
+
+```text
+firmware/m5stickc-plus2/src/wifi_config.example.h
+firmware/m5stickc-plus2/src/wifi_config.h
+```
+
+The real `wifi_config.h` must not be committed to Git because it will contain Wi-Fi credentials.
+
+Expected logger endpoint for current network:
+
+```cpp
+#define LOGGER_URL "http://192.168.8.129:8080/line"
+```
+
+### Recommended commit message
+
+```text
+Add HTTP logger receiver
+```
 
 
 # Journal entry template
