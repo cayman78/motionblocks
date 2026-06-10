@@ -2,67 +2,104 @@
 #include <math.h>
 
 // ============================================================
-// MotionBlocks — IMU logger v0.2
+// MotionBlocks — IMU logger v0.3
 //
-// Функциональность:
-// - устройство находится в режиме ожидания;
-// - двойное нажатие Button A запускает запись;
-// - одиночное нажатие Button A во время записи останавливает запись;
-// - во время записи IMU-данные отправляются в Serial в CSV-подобном формате;
-// - на экране отображается состояние устройства и номер записи.
+// Новое в v0.3:
+// - добавлен session_id;
+// - Button B переключает на следующую сессию;
+// - Button A double click запускает запись;
+// - Button A single click во время записи останавливает запись;
+// - experiment_id, device_id, subject_id прошивка НЕ знает.
 //
 // Serial-протокол:
 //
-// EVENT,START,record_id,timestamp_ms
-// DATA,record_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
-// EVENT,STOP,record_id,timestamp_ms,sample_count
+// EVENT,NEW_SESSION,session_id,timestamp_ms
+// EVENT,START,session_id,record_id,timestamp_ms
+// DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+// EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
 // ============================================================
 
 
 // ------------------------------------------------------------
-// Настройки частоты опроса
+// Настройки
 // ------------------------------------------------------------
 
-// Интервал между измерениями IMU.
-// 100 мс = 10 Гц.
-// Для первого прототипа 10 Гц достаточно.
+// Частота записи: 10 Гц = один сэмпл каждые 100 мс.
 static const uint32_t SAMPLE_INTERVAL_MS = 100;
 
-// Максимальное время между двумя кликами,
+// Максимальный интервал между двумя кликами Button A,
 // чтобы считать их двойным нажатием.
 static const uint32_t DOUBLE_CLICK_WINDOW_MS = 400;
 
 
 // ------------------------------------------------------------
-// Глобальные переменные состояния
+// Состояние сессии / записи
 // ------------------------------------------------------------
 
-// Время последнего измерения IMU.
-uint32_t last_sample_ms = 0;
+// Номер текущей сессии.
+// На экране и в Serial будет отображаться как A001, A002, A003...
+uint32_t session_number = 1;
+
+// Номер текущей попытки внутри сессии.
+uint32_t record_id = 1;
+
+// Номер сэмпла внутри текущей попытки.
+uint32_t sample_id = 0;
+
+// Количество сэмплов внутри текущей попытки.
+uint32_t sample_count = 0;
 
 // Идёт ли сейчас запись.
 bool is_recording = false;
 
-// Номер текущей / следующей записи.
-// Пока хранится только в оперативной памяти.
-// После перезагрузки снова начнётся с 1.
-uint32_t record_id = 1;
+// Время последнего сэмпла.
+uint32_t last_sample_ms = 0;
 
-// Количество сэмплов внутри текущей записи.
-uint32_t sample_count = 0;
 
-// Время последнего одиночного клика.
-// Используется для определения двойного клика.
+// ------------------------------------------------------------
+// Состояние кнопок
+// ------------------------------------------------------------
+
+// Время первого клика Button A.
 uint32_t last_click_ms = 0;
 
-// Флаг: был первый клик, ждём второй клик.
+// Ждём ли второй клик Button A для double click.
 bool waiting_for_second_click = false;
 
 
 // ------------------------------------------------------------
-// Отрисовка экрана в режиме ожидания
+// Формирование session_id
+//
+// session_number = 1  -> A001
+// session_number = 2  -> A002
+// session_number = 15 -> A015
+// ------------------------------------------------------------
+void getSessionId(char* buffer, size_t buffer_size) {
+    snprintf(buffer, buffer_size, "A%03lu", session_number);
+}
+
+
+// ------------------------------------------------------------
+// Отправка события NEW_SESSION
+// ------------------------------------------------------------
+void sendNewSessionEvent() {
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
+    Serial.print("EVENT,NEW_SESSION,");
+    Serial.print(session_id);
+    Serial.print(",");
+    Serial.println(millis());
+}
+
+
+// ------------------------------------------------------------
+// Экран IDLE
 // ------------------------------------------------------------
 void drawIdleScreen() {
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
     M5.Display.fillScreen(BLACK);
     M5.Display.setRotation(1);
 
@@ -71,24 +108,30 @@ void drawIdleScreen() {
     M5.Display.println("MotionBlocks");
 
     M5.Display.setTextSize(1);
-    M5.Display.println("IMU logger v0.2");
+    M5.Display.println("IMU logger v0.3");
 
-    M5.Display.setCursor(5, 45);
+    M5.Display.setCursor(5, 40);
+    M5.Display.printf("SESSION: %s\n", session_id);
+
+    M5.Display.setCursor(5, 60);
     M5.Display.println("Status: IDLE");
 
-    M5.Display.setCursor(5, 65);
-    M5.Display.printf("Next record: #%lu\n", record_id);
+    M5.Display.setCursor(5, 80);
+    M5.Display.printf("Next REC: #%lu\n", record_id);
 
-    M5.Display.setCursor(5, 95);
-    M5.Display.println("Double click A");
-    M5.Display.println("to start");
+    M5.Display.setCursor(5, 105);
+    M5.Display.println("A x2: start");
+    M5.Display.println("B: next session");
 }
 
 
 // ------------------------------------------------------------
-// Отрисовка экрана во время записи
+// Экран записи
 // ------------------------------------------------------------
 void drawRecordingScreen() {
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
     M5.Display.fillScreen(BLACK);
     M5.Display.setRotation(1);
 
@@ -99,27 +142,35 @@ void drawRecordingScreen() {
     M5.Display.setTextSize(1);
     M5.Display.println("Recording");
 
-    M5.Display.setCursor(5, 45);
+    M5.Display.setCursor(5, 40);
+    M5.Display.printf("SESSION: %s\n", session_id);
+
+    M5.Display.setCursor(5, 60);
     M5.Display.printf("REC #%lu\n", record_id);
 
-    M5.Display.setCursor(5, 65);
+    M5.Display.setCursor(5, 80);
     M5.Display.printf("samples: %lu\n", sample_count);
 
-    M5.Display.setCursor(5, 95);
-    M5.Display.println("Click A to stop");
+    M5.Display.setCursor(5, 105);
+    M5.Display.println("A: stop");
 }
 
 
 // ------------------------------------------------------------
-// Запуск новой записи
+// Запуск записи
 // ------------------------------------------------------------
 void startRecord() {
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
     is_recording = true;
+    sample_id = 0;
     sample_count = 0;
     last_sample_ms = millis();
 
-    // Сообщаем компьютеру, что началась новая запись.
     Serial.print("EVENT,START,");
+    Serial.print(session_id);
+    Serial.print(",");
     Serial.print(record_id);
     Serial.print(",");
     Serial.println(millis());
@@ -129,12 +180,15 @@ void startRecord() {
 
 
 // ------------------------------------------------------------
-// Остановка текущей записи
+// Остановка записи
 // ------------------------------------------------------------
 void stopRecord() {
-    // Сообщаем компьютеру, что запись завершена.
-    // Передаём номер записи, время остановки и число сэмплов.
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
     Serial.print("EVENT,STOP,");
+    Serial.print(session_id);
+    Serial.print(",");
     Serial.print(record_id);
     Serial.print(",");
     Serial.print(millis());
@@ -143,7 +197,7 @@ void stopRecord() {
 
     is_recording = false;
 
-    // Следующая запись получит следующий номер.
+    // Следующая попытка внутри этой же сессии.
     record_id++;
 
     drawIdleScreen();
@@ -151,37 +205,57 @@ void stopRecord() {
 
 
 // ------------------------------------------------------------
-// Обработка кнопки Button A
+// Переход к следующей сессии
 //
-// Логика:
-// - если запись идёт, одиночный клик останавливает запись;
-// - если запись не идёт, двойной клик запускает запись.
+// Важно:
+// - если запись идёт, Button B игнорируется;
+// - при переходе к новой сессии record_id снова начинается с 1;
+// - прошивка не знает, в какой experiment попадёт сессия.
 // ------------------------------------------------------------
-void handleButton() {
-    // Проверяем, был ли короткий клик по Button A.
+void nextSession() {
+    if (is_recording) {
+        return;
+    }
+
+    session_number++;
+    record_id = 1;
+    sample_id = 0;
+    sample_count = 0;
+    waiting_for_second_click = false;
+
+    sendNewSessionEvent();
+    drawIdleScreen();
+}
+
+
+// ------------------------------------------------------------
+// Обработка Button A
+//
+// Если запись идёт:
+//   одиночный клик A = stop
+//
+// Если запись не идёт:
+//   двойной клик A = start
+// ------------------------------------------------------------
+void handleButtonA() {
     if (!M5.BtnA.wasClicked()) {
         return;
     }
 
     uint32_t now = millis();
 
-    // Если запись уже идёт — любой клик останавливает запись.
     if (is_recording) {
         stopRecord();
         waiting_for_second_click = false;
         return;
     }
 
-    // Если записи нет и это первый клик —
-    // запоминаем время и ждём второй клик.
     if (!waiting_for_second_click) {
         waiting_for_second_click = true;
         last_click_ms = now;
         return;
     }
 
-    // Если второй клик пришёл достаточно быстро —
-    // считаем это двойным нажатием и запускаем запись.
     if (now - last_click_ms <= DOUBLE_CLICK_WINDOW_MS) {
         waiting_for_second_click = false;
         startRecord();
@@ -195,10 +269,19 @@ void handleButton() {
 
 
 // ------------------------------------------------------------
-// Сброс ожидания второго клика
+// Обработка Button B
 //
-// Если второй клик не пришёл в течение DOUBLE_CLICK_WINDOW_MS,
-// возвращаемся в обычное состояние.
+// Button B = перейти к следующей сессии.
+// ------------------------------------------------------------
+void handleButtonB() {
+    if (M5.BtnB.wasClicked()) {
+        nextSession();
+    }
+}
+
+
+// ------------------------------------------------------------
+// Сброс ожидания второго клика Button A
 // ------------------------------------------------------------
 void handleClickTimeout() {
     if (!waiting_for_second_click) {
@@ -214,32 +297,32 @@ void handleClickTimeout() {
 
 
 // ------------------------------------------------------------
-// Чтение IMU и отправка одного сэмпла в Serial
+// Чтение IMU и отправка строки DATA
 // ------------------------------------------------------------
 void sendImuSample() {
     uint32_t now = millis();
 
-    // Проверяем, пора ли брать следующий сэмпл.
     if (now - last_sample_ms < SAMPLE_INTERVAL_MS) {
         return;
     }
 
     last_sample_ms = now;
 
-    // Важно:
-    // M5.Imu.update() обновляет внутренние данные датчика.
-    // Без этого getImuData() может возвращать старые значения.
     bool imu_updated = M5.Imu.update();
 
     if (!imu_updated) {
+        char session_id[8];
+        getSessionId(session_id, sizeof(session_id));
+
         Serial.print("EVENT,IMU_NOT_UPDATED,");
+        Serial.print(session_id);
+        Serial.print(",");
         Serial.print(record_id);
         Serial.print(",");
         Serial.println(now);
         return;
     }
 
-    // Получаем данные акселерометра и гироскопа.
     auto data = M5.Imu.getImuData();
 
     float ax = data.accel.x;
@@ -250,16 +333,20 @@ void sendImuSample() {
     float gy = data.gyro.y;
     float gz = data.gyro.z;
 
-    // Норма ускорения.
-    // В покое должна быть примерно около 1g,
-    // потому что акселерометр видит ускорение свободного падения.
     float acc_norm = sqrt(ax * ax + ay * ay + az * az);
 
+    sample_id++;
     sample_count++;
 
-    // Отправляем строку данных.
+    char session_id[8];
+    getSessionId(session_id, sizeof(session_id));
+
     Serial.print("DATA,");
+    Serial.print(session_id);
+    Serial.print(",");
     Serial.print(record_id);
+    Serial.print(",");
+    Serial.print(sample_id);
     Serial.print(",");
     Serial.print(now);
     Serial.print(",");
@@ -277,12 +364,10 @@ void sendImuSample() {
     Serial.print(",");
     Serial.println(acc_norm, 4);
 
-    // Чтобы экран не мерцал слишком часто,
-    // обновляем количество сэмплов не на каждом измерении,
-    // а примерно раз в 5 сэмплов.
-    if (sample_count % 10 == 0) {
-        M5.Display.fillRect(0, 65, 240, 35, BLACK);
-        M5.Display.setCursor(5, 65);
+    // Обновляем экран не на каждом сэмпле, чтобы не было лишнего мерцания.
+    if (sample_count % 5 == 0) {
+        M5.Display.fillRect(0, 80, 240, 25, BLACK);
+        M5.Display.setCursor(5, 80);
         M5.Display.printf("samples: %lu\n", sample_count);
         M5.Display.printf("acc: %.2f g\n", acc_norm);
     }
@@ -290,45 +375,39 @@ void sendImuSample() {
 
 
 // ------------------------------------------------------------
-// setup() выполняется один раз при старте устройства
+// setup()
 // ------------------------------------------------------------
 void setup() {
-    // Инициализация M5StickC Plus2.
     auto cfg = M5.config();
     M5.begin(cfg);
 
-    // Инициализация Serial.
     Serial.begin(115200);
     delay(500);
 
-    // Печатаем справочную информацию в Serial.
-    Serial.println("MotionBlocks IMU logger v0.2");
+    Serial.println("MotionBlocks IMU logger v0.3");
     Serial.println("Protocol:");
-    Serial.println("EVENT,START,record_id,timestamp_ms");
-    Serial.println("DATA,record_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm");
-    Serial.println("EVENT,STOP,record_id,timestamp_ms,sample_count");
+    Serial.println("EVENT,NEW_SESSION,session_id,timestamp_ms");
+    Serial.println("EVENT,START,session_id,record_id,timestamp_ms");
+    Serial.println("DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm");
+    Serial.println("EVENT,STOP,session_id,record_id,timestamp_ms,sample_count");
 
-    // Стартуем в режиме ожидания.
+    // Сообщаем компьютеру стартовую сессию A001.
+    sendNewSessionEvent();
+
     drawIdleScreen();
 }
 
 
 // ------------------------------------------------------------
-// loop() выполняется постоянно
+// loop()
 // ------------------------------------------------------------
 void loop() {
-    // Обновляем внутреннее состояние M5:
-    // кнопки, питание и прочие системные вещи.
     M5.update();
 
-    // Обрабатываем нажатия кнопки.
-    handleButton();
-
-    // Проверяем, не истекло ли окно ожидания второго клика.
+    handleButtonA();
+    handleButtonB();
     handleClickTimeout();
 
-    // Если запись идёт — читаем IMU и отправляем данные.
-    // Если запись не идёт — данные не отправляются.
     if (is_recording) {
         sendImuSample();
     }
