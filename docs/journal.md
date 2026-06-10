@@ -9,9 +9,9 @@ Stable decisions should later be moved to the relevant documentation files.
 
 ---
 
-# 2026-06-08
+## 2026-06-08
 
-## Project identity fixed
+### Project identity fixed
 
 We selected the project naming structure:
 
@@ -26,7 +26,7 @@ Rationale:
 * It also describes the idea of a motion library built from reusable movement blocks.
 * MotionLink can later describe the connection between the motion domain and family / medical dashboards.
 
-## Development environment
+### Development environment
 
 Initial development stack:
 
@@ -43,7 +43,7 @@ Optional tools for later stages:
 * ChatGPT Data Analysis
 * Orange Data Mining
 
-## PlatformIO installed
+### PlatformIO installed
 
 PlatformIO IDE extension was installed in VS Code.
 
@@ -59,7 +59,7 @@ Working result:
 PlatformIO Core, version 6.1.19
 ```
 
-## Device detected
+### Device detected
 
 M5StickC Plus2 was detected in Windows Device Manager as:
 
@@ -75,7 +75,7 @@ COM6
 
 Bluetooth COM ports should not be used for firmware upload.
 
-## First firmware uploaded
+### First firmware uploaded
 
 The first firmware was successfully built and uploaded using:
 
@@ -106,7 +106,7 @@ alive
 alive
 ```
 
-## Confirmed
+### Confirmed
 
 The first firmware bring-up is complete.
 
@@ -121,7 +121,7 @@ Confirmed:
 * Display output works.
 * Serial output works.
 
-## Next steps
+### Next steps
 
 * Commit the first firmware.
 * Push branch `feature/first-firmware` to GitHub.
@@ -143,40 +143,6 @@ Confirmed:
   * `recorddata`
 
 ---
-
-# Journal entry template
-
-## YYYY-MM-DD
-
-### Topic
-
-Short title of the work session.
-
-### What was done
-
-* ...
-
-### Decisions
-
-* ...
-
-### Problems
-
-* ...
-
-### Results
-
-* ...
-
-### Next steps
-
-* [ ] ...
-* [ ] ...
-
-### Related files
-
-* `path/to/file`
-* `path/to/file`
 
 
 ## 2026-06-08 — IMU logger v0.1
@@ -639,4 +605,376 @@ Implemented and tested button-controlled IMU recording on M5StickC Plus2.
 EVENT,START,record_id,timestamp_ms
 DATA,record_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
 EVENT,STOP,record_id,timestamp_ms,sample_count
+
+## 2026-06-10 — Session-aware IMU logger v0.3
+
+### Context
+
+Continued development of the MotionBlocks firmware after successful button-controlled IMU recording.
+
+Current branch:
+
+```text
+feature/session-aware-logger
+```
+
+Previous working version:
+
+```text
+IMU logger v0.2 — button-controlled recording
+```
+
+The goal of this iteration was to add the concept of a recording session without making the firmware aware of experiment-level context.
+
+### Design decision
+
+The firmware should not know:
+
+```text
+experiment_id
+device_id
+subject_id
+movement_type
+movement_label
+```
+
+These belong to the Python logger and metadata layer.
+
+The firmware should only manage:
+
+```text
+session_id
+record_id
+sample_id
+sensor data
+```
+
+This keeps the device generic and reusable across experiments.
+
+### Implemented behavior
+
+* Device starts with session `A001`.
+* Button A double click starts a record.
+* Button A single click stops the current record.
+* Button B switches to the next session.
+* When session changes:
+
+  * `session_id` increments: `A001`, `A002`, `A003`, ...
+  * `record_id` resets to `1`;
+  * `sample_id` resets when a new record starts.
+* Data is sent only while recording.
+* Screen shows current session, record number, and sample count.
+
+### Serial protocol
+
+```csv
+EVENT,NEW_SESSION,session_id,timestamp_ms
+EVENT,START,session_id,record_id,timestamp_ms
+DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+```
+
+### Example Serial output
+
+```csv
+EVENT,NEW_SESSION,A001,12345
+EVENT,START,A001,1,13000
+DATA,A001,1,1,13100,0.0123,-0.0341,0.9872,0.1200,-0.0300,0.0100,0.9880
+DATA,A001,1,2,13200,0.0130,-0.0338,0.9869,0.1100,-0.0400,0.0200,0.9878
+EVENT,STOP,A001,1,19000,60
+EVENT,NEW_SESSION,A002,22000
+```
+
+### Result
+
+Session-aware firmware works.
+
+Confirmed:
+
+```text
+[✓] firmware builds successfully
+[✓] firmware uploads to M5StickC Plus2
+[✓] device starts with session A001
+[✓] Button A double click starts recording
+[✓] Button A single click stops recording
+[✓] Button B switches to next session
+[✓] DATA rows include session_id, record_id, sample_id
+[✓] record_id resets when session changes
+[✓] firmware does not know experiment_id
+```
+
+### File and metadata architecture
+
+Experiment context is assigned outside the firmware.
+
+Planned raw data path:
+
+```text
+data/raw/[experiment_id]/[device_id]/session_[session_id].csv
+```
+
+Example:
+
+```text
+data/raw/EXP01/m5_001/session_A001.csv
+data/raw/EXP01/m5_001/session_A002.csv
+data/raw/EXP01/m5_002/session_A001.csv
+```
+
+The firmware only sends `session_id`.
+The Python logger will provide:
+
+```text
+experiment_id
+device_id
+file_path
+```
+
+Metadata will provide:
+
+```text
+subject_id
+movement_type
+movement_label
+location
+comments
+status
+```
+
+### Next step
+
+Implement Python serial logger.
+
+Possible next branch:
+
+```text
+feature/python-serial-logger
+```
+
+Expected command:
+
+```powershell
+python tools/serial_logger.py --port COM6 --experiment-id EXP01 --device-id m5_001
+```
+
+Expected output files:
+
+```text
+data/raw/EXP01/m5_001/session_A001.csv
+data/raw/EXP01/m5_001/session_A002.csv
+```
+
+### Commit
+
+Recommended commit message:
+
+```text
+Add session id to button-controlled logger
+```
+
+
+
+## 2026-06-10 — Session-aware IMU logger v0.3
+
+### Context
+
+Continued development of the MotionBlocks firmware after successful button-controlled IMU recording.
+
+Current branch:
+
+```text
+feature/session-aware-logger
+```
+
+Previous working version:
+
+```text
+IMU logger v0.2 — button-controlled recording
+```
+
+The goal of this iteration was to add the concept of a recording session without making the firmware aware of experiment-level context.
+
+### Design decision
+
+The firmware should not know:
+
+```text
+experiment_id
+device_id
+subject_id
+movement_type
+movement_label
+```
+
+These belong to the Python logger and metadata layer.
+
+The firmware should only manage:
+
+```text
+session_id
+record_id
+sample_id
+sensor data
+```
+
+This keeps the device generic and reusable across experiments.
+
+### Implemented behavior
+
+* Device starts with session `A001`.
+* Button A double click starts a record.
+* Button A single click stops the current record.
+* Button B switches to the next session.
+* When session changes:
+
+  * `session_id` increments: `A001`, `A002`, `A003`, ...
+  * `record_id` resets to `1`;
+  * `sample_id` resets when a new record starts.
+* Data is sent only while recording.
+* Screen shows current session, record number, and sample count.
+
+### Serial protocol
+
+```csv
+EVENT,NEW_SESSION,session_id,timestamp_ms
+EVENT,START,session_id,record_id,timestamp_ms
+DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+```
+
+### Example Serial output
+
+```csv
+EVENT,NEW_SESSION,A001,12345
+EVENT,START,A001,1,13000
+DATA,A001,1,1,13100,0.0123,-0.0341,0.9872,0.1200,-0.0300,0.0100,0.9880
+DATA,A001,1,2,13200,0.0130,-0.0338,0.9869,0.1100,-0.0400,0.0200,0.9878
+EVENT,STOP,A001,1,19000,60
+EVENT,NEW_SESSION,A002,22000
+```
+
+### Result
+
+Session-aware firmware works.
+
+Confirmed:
+
+```text
+[✓] firmware builds successfully
+[✓] firmware uploads to M5StickC Plus2
+[✓] device starts with session A001
+[✓] Button A double click starts recording
+[✓] Button A single click stops recording
+[✓] Button B switches to next session
+[✓] DATA rows include session_id, record_id, sample_id
+[✓] record_id resets when session changes
+[✓] firmware does not know experiment_id
+```
+
+### File and metadata architecture
+
+Experiment context is assigned outside the firmware.
+
+Planned raw data path:
+
+```text
+data/raw/[experiment_id]/[device_id]/session_[session_id].csv
+```
+
+Example:
+
+```text
+data/raw/EXP01/m5_001/session_A001.csv
+data/raw/EXP01/m5_001/session_A002.csv
+data/raw/EXP01/m5_002/session_A001.csv
+```
+
+The firmware only sends `session_id`.
+The Python logger will provide:
+
+```text
+experiment_id
+device_id
+file_path
+```
+
+Metadata will provide:
+
+```text
+subject_id
+movement_type
+movement_label
+location
+comments
+status
+```
+
+### Next step
+
+Implement Python serial logger.
+
+Possible next branch:
+
+```text
+feature/python-serial-logger
+```
+
+Expected command:
+
+```powershell
+python tools/serial_logger.py --port COM6 --experiment-id EXP01 --device-id m5_001
+```
+
+Expected output files:
+
+```text
+data/raw/EXP01/m5_001/session_A001.csv
+data/raw/EXP01/m5_001/session_A002.csv
+```
+
+### Commit
+
+Recommended commit message:
+
+```text
+Add session id to button-controlled logger
+```
+
+
+
+
+
+# Journal entry template
+
+## YYYY-MM-DD
+
+### Topic
+
+Short title of the work session.
+
+### What was done
+
+* ...
+
+### Decisions
+
+* ...
+
+### Problems
+
+* ...
+
+### Results
+
+* ...
+
+### Next steps
+
+* [ ] ...
+* [ ] ...
+
+### Related files
+
+* `path/to/file`
+* `path/to/file`
 
