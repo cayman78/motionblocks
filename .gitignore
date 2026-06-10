@@ -239,14 +239,29 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Local data and databases
-data/raw/*.csv
-data/processed/*.csv
-data/db/*.db
-data/db/*.sqlite
-
-# Keep folder placeholders and docs
+# MotionBlocks generated data
+data/raw/*
+!data/raw/.gitkeep
 !data/raw/README.md
+
+data/processed/*
+!data/processed/.gitkeep
 !data/processed/README.md
+
+data/features/*
+!data/features/.gitkeep
+!data/features/README.md
+
+# Local auto-generated metadata
+data/metadata/*
+!data/metadata/.gitkeep
+!data/metadata/README.md
+
+# Local databases
+data/db/*
+!data/db/.gitkeep
 !data/db/README.md
-!data/examples/README.md
+
+# Keep examples under version control
+!data/examples/
+!data/examples/**
