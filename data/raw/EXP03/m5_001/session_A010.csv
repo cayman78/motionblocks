@@ -1,2 +1,0 @@
-row_type,session_id,record_id,sample_id,device_timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm,event_type,sample_count
-EVENT,A010,,,8272085,,,,,,,,NEW_SESSION,
