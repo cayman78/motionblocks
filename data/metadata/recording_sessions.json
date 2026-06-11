@@ -1607,5 +1607,143 @@
     "comment": "",
     "status": "auto created. needs description.",
     "tags": []
+  },
+  {
+    "experiment_id": "EXP06",
+    "device_id": "m5-01",
+    "session_id": "A001",
+    "session_uid": "EXP06_m5-01_A001",
+    "file_id": 1,
+    "file_name": "session_A001.csv",
+    "file_path": "data/raw/EXP06/m5-01/session_A001.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "mac_address": "F0:24:F9:97:ED:08",
+    "firmware_version": "motionblocks.logger.v0.6",
+    "device_name": "M5StickC Plus2 primary prototype",
+    "hardware_model": "M5StickC Plus2",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-11T19:54:00",
+    "sample_rate_hz": 100,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP06",
+    "device_id": "m5-01",
+    "session_id": "A002",
+    "session_uid": "EXP06_m5-01_A002",
+    "file_id": 2,
+    "file_name": "session_A002.csv",
+    "file_path": "data/raw/EXP06/m5-01/session_A002.csv",
+    "file_role": "raw_data",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "mac_address": "F0:24:F9:97:ED:08",
+    "firmware_version": "motionblocks.logger.v0.6.1",
+    "device_name": "M5StickC Plus2 primary prototype",
+    "hardware_model": "M5StickC Plus2",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "started_at": "2026-06-11T20:40:46",
+    "sample_rate_hz": 10,
+    "records_expected": null,
+    "records_actual": null,
+    "channels": [
+      {
+        "name": "ax",
+        "kind": "acceleration",
+        "axis": "x",
+        "unit": "g"
+      },
+      {
+        "name": "ay",
+        "kind": "acceleration",
+        "axis": "y",
+        "unit": "g"
+      },
+      {
+        "name": "az",
+        "kind": "acceleration",
+        "axis": "z",
+        "unit": "g"
+      },
+      {
+        "name": "gx",
+        "kind": "angular_velocity",
+        "axis": "x",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gy",
+        "kind": "angular_velocity",
+        "axis": "y",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "gz",
+        "kind": "angular_velocity",
+        "axis": "z",
+        "unit": "deg_per_sec"
+      },
+      {
+        "name": "acc_norm",
+        "kind": "derived_acceleration_norm",
+        "unit": "g"
+      }
+    ],
+    "comment": "",
+    "status": "auto created. needs description.",
+    "tags": []
   }
 ]

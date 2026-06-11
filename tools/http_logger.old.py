@@ -179,6 +179,44 @@ def session_number_from_id(session_id: str) -> Optional[int]:
     return None
 
 
+def normalize_mac_address(mac_address: str) -> str:
+    """
+    Нормализовать MAC-адрес для сопоставления.
+
+    Пример:
+
+        f0:24:f9:97:ed:08 -> F0:24:F9:97:ED:08
+    """
+    return mac_address.strip().upper()
+
+
+def find_device_by_mac(devices: list[dict], mac_address: str) -> Optional[dict]:
+    """
+    Найти устройство в registry по MAC-адресу.
+
+    devices.json ожидается в формате:
+
+        [
+          {
+            "device_id": "m5_001",
+            "mac_address": "F0:24:F9:97:ED:08"
+          }
+        ]
+    """
+    target_mac = normalize_mac_address(mac_address)
+
+    for device in devices:
+        current_mac = device.get("mac_address")
+
+        if not current_mac:
+            continue
+
+        if normalize_mac_address(str(current_mac)) == target_mac:
+            return device
+
+    return None
+
+
 def create_draft_experiment_metadata(
     experiments_path: Path,
     experiment_id: str,
@@ -235,6 +273,9 @@ def create_draft_session_metadata(
     device_id: str,
     session_id: str,
     file_path: Path,
+    mac_address: Optional[str] = None,
+    firmware_version: Optional[str] = None,
+    device_registry_record: Optional[dict] = None,
 ) -> None:
     """
     Добавить черновую запись о recording session в recording_sessions.json.
@@ -268,6 +309,10 @@ def create_draft_session_metadata(
         "file_role": "raw_data",
         "data_format": "wide_csv",
         "schema_version": "motionblocks.sample.v0.1",
+        "mac_address": mac_address,
+        "firmware_version": firmware_version,
+        "device_name": device_registry_record.get("device_name") if device_registry_record else None,
+        "hardware_model": device_registry_record.get("hardware_model") if device_registry_record else None,
         "movement_type": "unknown",
         "movement_label": "unknown",
         "subject_id": "unknown",
@@ -308,18 +353,30 @@ class SessionWriter:
         self,
         base_dir: Path,
         experiment_id: str,
-        device_id: str,
+        device_id: Optional[str],
         create_metadata: bool,
         experiments_path: Path,
         sessions_path: Path,
+        devices_path: Path,
     ) -> None:
         # Базовая папка для raw data, обычно data/raw.
         self.base_dir = base_dir
 
-        # Эти поля прошивка не знает.
-        # Их задаёт пользователь при запуске Python logger.
+        # experiment_id задаётся пользователем при запуске logger.
+        # device_id может быть задан явно через --device-id
+        # или автоматически определён по DEVICE_INFO / devices.json.
         self.experiment_id = experiment_id
-        self.device_id = device_id
+        self.cli_device_id = device_id
+        self.effective_device_id: Optional[str] = device_id
+
+        # Пути и registry устройств.
+        self.devices_path = devices_path
+        self.devices = load_json_list(devices_path)
+        self.device_registry_record: Optional[dict] = None
+
+        # DEVICE_INFO, полученный от устройства.
+        self.mac_address: Optional[str] = None
+        self.firmware_version: Optional[str] = None
 
         # Надо ли автоматически создавать черновую metadata.
         self.create_metadata = create_metadata
@@ -337,6 +394,88 @@ class SessionWriter:
         # Открытый файл и CSV writer.
         self.current_file: Optional[TextIO] = None
         self.current_writer: Optional[csv.writer] = None
+
+    def require_device_id(self) -> str:
+        """
+        Вернуть эффективный device_id.
+
+        Если device_id не задан через CLI и ещё не определён по DEVICE_INFO,
+        открывать session-файл нельзя: иначе появятся грязные данные
+        под неизвестным устройством.
+        """
+        if self.effective_device_id:
+            return self.effective_device_id
+
+        raise RuntimeError(
+            "device_id is not provided and device could not be resolved from DEVICE_INFO. "
+            "Provide --device-id or register device MAC in data/metadata/devices.json."
+        )
+
+    def handle_device_info(
+        self,
+        mac_address: str,
+        firmware_version: str,
+        timestamp_ms: str,
+    ) -> None:
+        """
+        Обработать EVENT,DEVICE_INFO.
+
+        Правило:
+
+        - если --device-id задан, он имеет приоритет;
+        - DEVICE_INFO используется для служебной проверки и enrichment metadata;
+        - если --device-id не задан, device_id должен быть найден по devices.json;
+        - если найти не удалось, это ошибка.
+        """
+        self.mac_address = normalize_mac_address(mac_address)
+        self.firmware_version = firmware_version
+
+        registry_record = find_device_by_mac(self.devices, self.mac_address)
+        self.device_registry_record = registry_record
+
+        if self.cli_device_id:
+            if registry_record is None:
+                print(
+                    f"WARNING: DEVICE_INFO MAC {self.mac_address} is not registered in {self.devices_path}."
+                )
+                print(f"Using explicit --device-id {self.cli_device_id}.")
+                return
+
+            registry_device_id = registry_record.get("device_id")
+
+            if registry_device_id == self.cli_device_id:
+                print(
+                    f"DEVICE OK: --device-id {self.cli_device_id} matches DEVICE_INFO MAC {self.mac_address}."
+                )
+                return
+
+            print(
+                f"WARNING: --device-id is {self.cli_device_id}, "
+                f"but DEVICE_INFO MAC {self.mac_address} is registered as {registry_device_id}."
+            )
+            print(f"Using explicit --device-id {self.cli_device_id}.")
+            return
+
+        if registry_record is None:
+            raise RuntimeError(
+                f"device_id is not provided and DEVICE_INFO MAC {self.mac_address} "
+                f"is not registered in {self.devices_path}. "
+                "Provide --device-id or register the device MAC."
+            )
+
+        registry_device_id = registry_record.get("device_id")
+
+        if not registry_device_id:
+            raise RuntimeError(
+                f"Device registry record for MAC {self.mac_address} has no device_id."
+            )
+
+        self.effective_device_id = str(registry_device_id)
+
+        print(
+            f"DEVICE OK: resolved device_id {self.effective_device_id} "
+            f"from DEVICE_INFO MAC {self.mac_address}."
+        )
 
     def _session_path(self, session_id: str) -> Path:
         """
@@ -356,7 +495,7 @@ class SessionWriter:
         return (
             self.base_dir
             / self.experiment_id
-            / self.device_id
+            / self.require_device_id()
             / f"session_{session_id}.csv"
         )
 
@@ -395,15 +534,18 @@ class SessionWriter:
             create_draft_experiment_metadata(
                 experiments_path=self.experiments_path,
                 experiment_id=self.experiment_id,
-                device_id=self.device_id,
+                device_id=self.require_device_id(),
             )
 
             create_draft_session_metadata(
                 sessions_path=self.sessions_path,
                 experiment_id=self.experiment_id,
-                device_id=self.device_id,
+                device_id=self.require_device_id(),
                 session_id=session_id,
                 file_path=path,
+                mac_address=self.mac_address,
+                firmware_version=self.firmware_version,
+                device_registry_record=self.device_registry_record,
             )
 
         self.write_event(
@@ -554,6 +696,24 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
         return
 
     event_type = parts[1]
+
+    if event_type == "DEVICE_INFO":
+        if len(parts) != 5:
+            print(f"[WARN] Bad DEVICE_INFO event: {parts}")
+            return
+
+        mac_address = parts[2]
+        firmware_version = parts[3]
+        timestamp_ms = parts[4]
+
+        writer.handle_device_info(
+            mac_address=mac_address,
+            firmware_version=firmware_version,
+            timestamp_ms=timestamp_ms,
+        )
+
+        print("[INFO] Received event type: DEVICE_INFO")
+        return
 
     if event_type == "NEW_SESSION":
         if len(parts) != 4:
@@ -858,8 +1018,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--device-id",
-        required=True,
-        help="Device id, for example m5_001",
+        required=False,
+        default=None,
+        help="Device id, for example m5_001. If omitted, logger resolves device_id from DEVICE_INFO and devices.json.",
     )
     parser.add_argument(
         "--base-dir",
@@ -881,6 +1042,11 @@ def main() -> None:
         default="data/metadata/recording_sessions.json",
         help="Path to recording sessions metadata JSON file",
     )
+    parser.add_argument(
+        "--devices-path",
+        default="data/metadata/devices.json",
+        help="Path to device registry JSON file",
+    )
 
     args = parser.parse_args()
 
@@ -897,6 +1063,7 @@ def main() -> None:
         create_metadata=args.create_metadata,
         experiments_path=Path(args.experiments_path),
         sessions_path=Path(args.sessions_path),
+        devices_path=Path(args.devices_path),
     )
 
     # --------------------------------------------------------
@@ -935,7 +1102,8 @@ def main() -> None:
     print(f"Host:            {args.host}")
     print(f"Port:            {args.port}")
     print(f"Experiment id:   {args.experiment_id}")
-    print(f"Device id:       {args.device_id}")
+    print(f"Device id:       {args.device_id if args.device_id else '(auto from DEVICE_INFO)'}")
+    print(f"Devices:         {args.devices_path}")
     print(f"Base dir:        {args.base_dir}")
     print(f"Create metadata: {args.create_metadata}")
     print(f"Experiments:     {args.experiments_path}")

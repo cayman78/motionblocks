@@ -13,7 +13,6 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 # Назначение:
 # - поднять локальный HTTP-сервер на ноутбуке;
 # - принимать строки протокола от M5StickC Plus2 по Wi-Fi;
-# - принимать как одиночные строки, так и batch из нескольких строк;
 # - сохранять эти строки в те же CSV-файлы, что и serial_logger.py;
 # - опционально создавать черновые записи metadata.
 #
@@ -29,28 +28,8 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 #
 # Важно:
 # - формат строк EVENT / DATA не меняется;
-# - HTTP — это только транспорт;
-# - firmware может отправлять одну строку на POST;
-# - firmware может отправлять несколько DATA-строк в одном POST body;
-# - logger разбивает HTTP body через splitlines() и обрабатывает
-#   каждую строку как обычную строку протокола.
-#
-# Текущая transport-модель:
-#
-#   IDLE / service events:
-#       DEVICE_INFO
-#       SAMPLE_RATE
-#       NEW_SESSION
-#       обычно приходят как отдельные one-shot HTTP POST.
-#
-#   RECORDING / data stream:
-#       START приходит сразу;
-#       DATA может приходить пачками, например 25 строк в одном POST;
-#       перед STOP прошивка должна сбросить накопленный DATA batch;
-#       STOP приходит после всех DATA текущей записи.
-#
-# Это позволяет сохранить простой endpoint /line и при этом поддержать
-# более высокие частоты дискретизации по Wi-Fi.
+# - меняется только транспорт: вместо Serial используется HTTP;
+# - это позволит надеть устройство на руку и писать данные без провода.
 #
 # Пример запуска:
 #
@@ -61,15 +40,10 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 #   GET  http://127.0.0.1:8080/health
 #   POST http://127.0.0.1:8080/line
 #
-# Пример одиночного body для POST /line:
+# Пример body для POST /line:
 #
 #   EVENT,SAMPLE_RATE,10,12345
-#
-# Пример batch body для POST /line:
-#
-#   DATA,A001,1,1,13100,0.01,-0.03,0.98,0.1,0.0,0.0,0.98
-#   DATA,A001,1,2,13120,0.01,-0.03,0.98,0.1,0.0,0.0,0.98
-#   DATA,A001,1,3,13140,0.01,-0.03,0.98,0.1,0.0,0.0,0.98
+#   EVENT,NEW_SESSION,A001,12400
 #
 # ============================================================
 
@@ -80,12 +54,8 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 # В один файл пишем и события, и данные.
 #
 # row_type:
-#   EVENT — служебная строка: NEW_SESSION / START / STOP и т.п.
+#   EVENT — служебная строка: NEW_SESSION / START / STOP
 #   DATA  — строка с измерением IMU
-#
-# Batch mode не меняет CSV schema:
-# несколько DATA-строк могут прийти в одном HTTP POST,
-# но в CSV они всё равно записываются как отдельные строки.
 # ------------------------------------------------------------
 CSV_HEADER = [
     "row_type",
@@ -921,8 +891,7 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
         POST /line
 
             Основной endpoint.
-            Устройство отправляет сюда одну строку протокола EVENT/DATA
-            или batch из нескольких строк, разделённых переводом строки.
+            Устройство отправляет сюда одну строку протокола EVENT/DATA.
 
     Важно:
     writer хранится как class variable:
@@ -1002,29 +971,21 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
 
             POST /line
 
-        Устройство отправляет body как plain text.
+        Устройство должно отправлять body как plain text:
 
-        Body может содержать одну строку протокола:
+            EVENT,NEW_SESSION,A001,12345
 
-            EVENT,START,A001,1,13000
-
-        или несколько строк протокола сразу:
+        или:
 
             DATA,A001,1,1,13100,0.0123,-0.0341,0.9872,0.1200,-0.0300,0.0100,0.9880
-            DATA,A001,1,2,13120,0.0124,-0.0340,0.9871,0.1200,-0.0300,0.0100,0.9880
-            DATA,A001,1,3,13140,0.0125,-0.0339,0.9870,0.1200,-0.0300,0.0100,0.9880
-
-        Это используется для HTTP batch mode:
-        прошивка может копить DATA-строки и отправлять их одной пачкой,
-        чтобы уменьшить количество HTTP POST-запросов при 25 / 50 / 100 Hz.
 
         Алгоритм:
         1. Проверяем, что путь ровно /line.
         2. Читаем Content-Length.
         3. Читаем body заданной длины.
         4. Декодируем body как UTF-8.
-        5. Разбиваем body на строки через splitlines().
-        6. Каждую непустую строку передаём в handle_protocol_line().
+        5. Разбиваем body на строки.
+        6. Каждую строку передаём в handle_protocol_line().
         7. Возвращаем "ok".
         """
         parsed = urlparse(self.path)
@@ -1060,19 +1021,11 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Устройство может отправить:
-            # - одну строку протокола в одном POST;
-            # - batch из нескольких строк протокола в одном POST.
+            # Обычно устройство будет отправлять одну строку на один POST.
             #
-            # splitlines() делает транспортный batch прозрачным:
-            # ниже каждая строка обрабатывается так же, как если бы
-            # она пришла отдельным POST.
+            # Но splitlines() позволяет принять и несколько строк сразу.
+            # Это полезно для тестов и будущего batch-режима.
             for line in body.splitlines():
-                line = line.strip()
-
-                if not line:
-                    continue
-
                 handle_protocol_line(line, self.writer)
 
         except Exception as exc:
@@ -1213,7 +1166,6 @@ def main() -> None:
     print(f"Device id:       {args.device_id if args.device_id else '(auto from DEVICE_INFO)'}")
     print(f"Devices:         {args.devices_path}")
     print("Sample rate:     auto from EVENT,SAMPLE_RATE, default 10 Hz")
-    print("HTTP body:       one protocol line or newline-separated batch")
     print(f"Base dir:        {args.base_dir}")
     print(f"Create metadata: {args.create_metadata}")
     print(f"Experiments:     {args.experiments_path}")

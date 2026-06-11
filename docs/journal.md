@@ -1754,6 +1754,351 @@ Allow selecting sampling rate at device startup: 5 / 10 / 25 / 50 / 100 Hz.
 
 
 
+## 2026-06-11 — Selectable sampling rate and HTTP batch logging
+
+### Context
+
+Continued development after `feature/device-info-event`.
+
+Planned branch sequence:
+
+```text
+feature/device-info-event
+feature/selectable-sampling-rate
+feature/recording-runs-and-safe-file-names
+```
+
+The first branch was completed. The next goal was to let the M5StickC Plus2 choose the IMU sampling rate at startup and report the selected rate to the logger.
+
+### Branch
+
+```text
+feature/selectable-sampling-rate
+```
+
+### Firmware changes
+
+Firmware version was advanced through the experimental iterations:
+
+```text
+motionblocks.logger.v0.6
+motionblocks.logger.v0.6.1
+motionblocks.logger.v0.6.2
+```
+
+Added selectable sampling rate at device startup.
+
+Supported rates:
+
+```text
+5 Hz
+10 Hz
+25 Hz
+50 Hz
+100 Hz
+```
+
+Startup behavior:
+
+```text
+Button A → select next sampling rate
+Button B → confirm selected sampling rate
+```
+
+Default behavior:
+
+```text
+If no button is pressed, the device automatically selects 10 Hz after timeout.
+```
+
+UX adjustment:
+
+```text
+If Button A is pressed at least once, timeout is disabled.
+The device waits for Button B confirmation.
+```
+
+This prevents the device from moving to the next screen while the user is still choosing a rate.
+
+### Added protocol event
+
+The firmware now sends:
+
+```csv
+EVENT,SAMPLE_RATE,sample_rate_hz,timestamp_ms
+```
+
+Example:
+
+```csv
+EVENT,SAMPLE_RATE,50,11143
+```
+
+Startup sequence became:
+
+```csv
+EVENT,DEVICE_INFO,F0:24:F9:97:ED:08,motionblocks.logger.v0.6.2,...
+EVENT,SAMPLE_RATE,50,...
+EVENT,NEW_SESSION,A001,...
+```
+
+The Python HTTP logger stores the selected rate in draft session metadata:
+
+```json
+"sample_rate_hz": 50
+```
+
+Important interpretation:
+
+```text
+sample_rate_hz currently means configured / selected sampling rate
+```
+
+It is not automatically a verified effective sampling rate.
+
+### Initial HTTP limitation found
+
+When sending one HTTP POST per sample, the selected rate was not achieved at higher frequencies.
+
+Observed behavior:
+
+```text
+5 Hz  → slows down correctly
+10 Hz → works approximately as before
+25 Hz → not reached reliably
+50 Hz → not reached reliably
+```
+
+At 25 / 50 Hz, actual `DATA` timestamp intervals were still close to the previous per-sample HTTP limitation.
+
+Conclusion:
+
+```text
+The sampling-rate selection logic works.
+The bottleneck is the transport model.
+```
+
+The issue is not payload size.
+
+The issue is:
+
+```text
+one sample = one synchronous HTTP request/response
+```
+
+### HTTP keep-alive experiment
+
+An intermediate experiment tested whether reusing the HTTP connection would be enough.
+
+Transport model tested:
+
+```text
+IDLE:
+    service events → one-shot HTTP POST
+
+RECORDING:
+    START / DATA / STOP → one reused HTTPClient connection
+```
+
+Result:
+
+```text
+HTTP keep-alive did not solve the problem sufficiently.
+```
+
+Even with keep-alive, one POST per sample remained too expensive for reliable 25 / 50 Hz logging.
+
+Decision:
+
+```text
+Do not continue optimizing per-sample HTTP POST.
+```
+
+### HTTP batch logging
+
+Next, HTTP batch mode was implemented during active recording.
+
+Current transport model:
+
+```text
+IDLE:
+    DEVICE_INFO  → one-shot HTTP POST
+    SAMPLE_RATE  → one-shot HTTP POST
+    NEW_SESSION  → one-shot HTTP POST
+
+RECORDING:
+    START → immediate HTTP POST through recording client
+    DATA  → buffered and sent in batches
+    STOP  → flush DATA batch first, then send STOP
+    after STOP → close recording HTTP client
+```
+
+Batch parameters:
+
+```cpp
+static const uint16_t HTTP_BATCH_MAX_LINES = 25;
+static const uint32_t HTTP_BATCH_MAX_AGE_MS = 500;
+```
+
+Flush conditions:
+
+```text
+1. batch has 25 DATA rows;
+2. batch age reaches 500 ms;
+3. STOP is pressed.
+```
+
+Serial output remains immediate:
+
+```text
+Each DATA row is still printed to Serial as soon as it is sampled.
+```
+
+HTTP output is batched only for `DATA` rows during recording.
+
+Control events remain ordered.
+
+Required order on STOP:
+
+```text
+1. flush buffered DATA
+2. send EVENT,STOP
+3. close recording HTTP client
+```
+
+This preserves CSV order:
+
+```csv
+DATA,...
+DATA,...
+DATA,...
+EVENT,STOP,...
+```
+
+### HTTP logger update
+
+`tools/http_logger.py` already supported multiple lines in one POST body because it used:
+
+```python
+for line in body.splitlines():
+    handle_protocol_line(line, self.writer)
+```
+
+The logger was updated mainly in comments and diagnostics.
+
+The documented behavior is now:
+
+```text
+POST /line may contain one protocol line or a newline-separated batch.
+```
+
+The logger treats transport batching as transparent:
+
+```text
+one POST with 25 DATA rows
+```
+
+is processed as:
+
+```text
+25 normal DATA protocol lines
+```
+
+CSV schema remains unchanged.
+
+### Test result
+
+HTTP batch mode works.
+
+Observed result:
+
+```text
+25 Hz works
+50 Hz works
+100 Hz works in current test
+```
+
+This confirms that the previous bottleneck was not Wi-Fi bandwidth and not firmware sampling-rate selection.
+
+The bottleneck was per-sample synchronous HTTP transaction overhead.
+
+### Design decision
+
+Use HTTP batch mode as the primary wireless transport for the current prototype.
+
+Current position:
+
+```text
+HTTP per-sample mode → acceptable for 5 / 10 Hz and debugging
+HTTP keep-alive per-sample → not sufficient
+HTTP batch mode → current working wireless mode for 25 / 50 / 100 Hz
+TCP stream → future option only if batch mode becomes insufficient
+```
+
+### Current protocol
+
+```csv
+EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms
+EVENT,SAMPLE_RATE,sample_rate_hz,timestamp_ms
+EVENT,NEW_SESSION,session_id,timestamp_ms
+EVENT,START,session_id,record_id,timestamp_ms
+DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
+EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+```
+
+Batch mode does not change the protocol.
+
+It only changes how multiple `DATA` lines are transported over HTTP.
+
+### Confirmed
+
+```text
+[✓] Firmware builds
+[✓] Firmware uploads to M5StickC Plus2
+[✓] Startup sample-rate selection works
+[✓] Button A cycles through rates
+[✓] Button B confirms selected rate
+[✓] Timeout selects 10 Hz only if user did not press Button A
+[✓] Firmware emits EVENT,SAMPLE_RATE
+[✓] HTTP logger receives SAMPLE_RATE
+[✓] recording_sessions.json stores selected sample_rate_hz for new sessions
+[✓] Per-sample HTTP limitation was reproduced
+[✓] HTTP keep-alive was tested and rejected as insufficient
+[✓] HTTP batch mode works
+[✓] 100 Hz works in current HTTP batch test
+[✓] CSV schema remains unchanged
+[✓] Serial output remains immediate
+```
+
+### Related files
+
+```text
+firmware/m5stickc-plus2/src/main.cpp
+tools/http_logger.py
+docs/journal.md
+```
+
+### Recommended commit message
+
+```text
+Add selectable sampling rate and HTTP batch logging
+```
+
+### Next step
+
+Continue to the next planned branch:
+
+```text
+feature/recording-runs-and-safe-file-names
+```
+
+Goal:
+
+```text
+Introduce recording_run_id and safer file names so repeated runs do not overwrite or conflict with existing session files.
+```
+
+
 # Journal entry template
 
 ## YYYY-MM-DD
