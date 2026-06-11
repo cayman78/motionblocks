@@ -180,6 +180,78 @@ if mac_address is unknown:
 
 This allows a gradual migration from manual device ids to automatic device recognition.
 
+
+---
+
+## Device ID resolution rule
+
+Final implementation rule for logger-side device resolution:
+
+```text
+if --device-id is provided:
+    use --device-id as the effective device_id
+
+    if DEVICE_INFO is received:
+        resolve mac_address through devices.json
+
+        if resolved device_id matches --device-id:
+            print DEVICE OK
+
+        if resolved device_id differs from --device-id:
+            print WARNING
+            continue using explicit --device-id
+
+        if mac_address is not found in devices.json:
+            print WARNING
+            continue using explicit --device-id
+
+else:
+    require DEVICE_INFO
+    resolve mac_address through devices.json
+
+    if resolved:
+        use resolved device_id
+
+    if not resolved:
+        fail with explicit error
+```
+
+The explicit command-line value has priority:
+
+```text
+--device-id overrides device registry resolution
+```
+
+However, when both `--device-id` and `DEVICE_INFO` are available, the logger should validate them and print a service message.
+
+Expected service messages:
+
+```text
+DEVICE OK: --device-id m5_001 matches DEVICE_INFO MAC AA:BB:CC:DD:EE:FF.
+```
+
+```text
+WARNING: --device-id is m5_001, but DEVICE_INFO MAC 11:22:33:44:55:66 is registered as m5_002.
+Using explicit --device-id m5_001.
+```
+
+```text
+WARNING: DEVICE_INFO MAC AA:BB:CC:DD:EE:FF is not registered in data/metadata/devices.json.
+Using explicit --device-id m5_001.
+```
+
+If no `--device-id` is provided and the device cannot be resolved:
+
+```text
+ERROR: device_id is not provided and device could not be resolved from DEVICE_INFO.
+Provide --device-id or register device MAC in data/metadata/devices.json.
+```
+
+This rule prevents silent creation of data under an unknown or wrong device id while still allowing manual override during development and debugging.
+
+
+
+
 ---
 
 ## Proposed device registry

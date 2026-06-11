@@ -6,7 +6,7 @@
 
 
 // ============================================================
-// MotionBlocks — IMU logger v0.5
+// MotionBlocks — IMU logger v0.4
 //
 // Текущий этап:
 // - session-aware IMU logger;
@@ -26,7 +26,6 @@
 //
 // Протокол:
 //
-// EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms
 // EVENT,NEW_SESSION,session_id,timestamp_ms
 // EVENT,START,session_id,record_id,timestamp_ms
 // DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
@@ -41,11 +40,6 @@
 // ------------------------------------------------------------
 // Настройки записи
 // ------------------------------------------------------------
-
-// Версия прошивки.
-// Используется в DEVICE_INFO, чтобы logger понимал,
-// какой код работает на устройстве.
-static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.5";
 
 // Частота записи: 10 Гц = один сэмпл каждые 100 мс.
 static const uint32_t SAMPLE_INTERVAL_MS = 100;
@@ -153,19 +147,6 @@ String getWifiStatusText() {
     }
 
     return "WiFi OFF";
-}
-
-
-// ------------------------------------------------------------
-// Получение MAC-адреса устройства
-//
-// Это техническая аппаратная идентичность устройства.
-// Читаемый device_id, например m5_001, назначается не здесь,
-// а на стороне Python logger / devices.json.
-// ------------------------------------------------------------
-
-String getDeviceMacAddress() {
-    return WiFi.macAddress();
 }
 
 
@@ -383,30 +364,6 @@ void sendHttpLine(const String& line) {
 void emitProtocolLine(const String& line) {
     Serial.println(line);
     sendHttpLine(line);
-}
-
-
-// ------------------------------------------------------------
-// Отправка события DEVICE_INFO
-//
-// Это событие сообщает logger'у техническую идентичность
-// устройства: MAC-адрес и версию прошивки.
-//
-// Важно:
-// - firmware не назначает device_id;
-// - logger сопоставляет mac_address → device_id;
-// - событие отправляется до NEW_SESSION;
-// - событие уходит в оба канала: Serial и HTTP.
-// ------------------------------------------------------------
-
-void sendDeviceInfoEvent() {
-    String line =
-        String("EVENT,DEVICE_INFO,") +
-        getDeviceMacAddress() + "," +
-        String(FIRMWARE_VERSION) + "," +
-        String(millis());
-
-    emitProtocolLine(line);
 }
 
 
@@ -774,9 +731,8 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    Serial.println("MotionBlocks IMU logger v0.5");
+    Serial.println("MotionBlocks IMU logger v0.4");
     Serial.println("Protocol:");
-    Serial.println("EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms");
     Serial.println("EVENT,NEW_SESSION,session_id,timestamp_ms");
     Serial.println("EVENT,START,session_id,record_id,timestamp_ms");
     Serial.println("DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm");
@@ -787,10 +743,6 @@ void setup() {
 
     // Подключаемся к Wi-Fi.
     connectToWifi();
-
-    // Сообщаем техническую идентичность устройства.
-    // Logger сможет сопоставить MAC address с device_id.
-    sendDeviceInfoEvent();
 
     // Сообщаем стартовую сессию A001.
     // Теперь строка уйдёт и в Serial, и по HTTP.

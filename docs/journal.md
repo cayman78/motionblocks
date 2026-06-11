@@ -1496,6 +1496,264 @@ The firmware endpoint was:
 Add Wi-Fi HTTP output to device logger
 ```
 
+
+## 2026-06-11 — Device info event and MAC-based device resolution
+
+### Context
+
+Continued work on the wireless MotionBlocks pipeline.
+
+Previous working pipeline:
+
+```text
+M5StickC Plus2
+  → Wi-Fi
+  → HTTP POST /line
+  → tools/http_logger.py
+  → CSV files
+  → draft metadata
+```
+
+The next improvement was to let the device report its own hardware identity, so that the logger can validate or resolve the project-level `device_id`.
+
+### Branch
+
+```text
+feature/device-info-event
+```
+
+### Design decision
+
+The device reports its technical hardware identity:
+
+```text
+mac_address
+firmware_version
+```
+
+The firmware does not assign the project-level `device_id`.
+
+The logger maps:
+
+```text
+mac_address → device_id
+```
+
+using the local device registry:
+
+```text
+data/metadata/devices.json
+```
+
+The command-line `--device-id` remains supported as an explicit override.
+
+### Implemented firmware change
+
+Firmware version updated to:
+
+```text
+motionblocks.logger.v0.5
+```
+
+Added startup event:
+
+```csv
+EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms
+```
+
+Example received from the device:
+
+```csv
+EVENT,DEVICE_INFO,F0:24:F9:97:ED:08,motionblocks.logger.v0.5,6972
+EVENT,NEW_SESSION,A001,7425
+```
+
+The event is sent before the first session event.
+
+The same event is sent through both channels:
+
+```text
+Serial
+HTTP POST
+```
+
+### Implemented HTTP logger change
+
+Updated:
+
+```text
+tools/http_logger.py
+```
+
+The HTTP logger now supports:
+
+```text
+EVENT,DEVICE_INFO,...
+```
+
+The logger can read a device registry from:
+
+```text
+data/metadata/devices.json
+```
+
+An example registry file was added:
+
+```text
+data/metadata/devices.example.json
+```
+
+The real `devices.json` is local and may contain real device MAC addresses.
+
+### Device ID resolution rule
+
+If `--device-id` is provided:
+
+```text
+use --device-id as the effective device_id
+```
+
+If `DEVICE_INFO` is received, the logger checks the MAC address against `devices.json`.
+
+If the resolved device id matches the explicit `--device-id`, the logger prints:
+
+```text
+DEVICE OK
+```
+
+If the resolved device id differs from `--device-id`, the logger prints:
+
+```text
+WARNING
+```
+
+but continues using the explicit `--device-id`.
+
+If the MAC address is not registered, the logger also prints:
+
+```text
+WARNING
+```
+
+but continues using the explicit `--device-id`.
+
+If `--device-id` is not provided:
+
+```text
+DEVICE_INFO is required
+```
+
+The logger resolves:
+
+```text
+mac_address → device_id
+```
+
+through `devices.json`.
+
+If the MAC address cannot be resolved, the logger fails with an explicit error.
+
+The logger does not silently create data under `unknown_device`.
+
+### Current limitation
+
+The current HTTP logger instance is intended for one active device at a time.
+
+Current rule:
+
+```text
+one logger instance = one active device stream
+```
+
+`device_id` is not added to every `DATA` row.
+
+Reason:
+
+* the file already lives under the device folder;
+* session metadata stores device information;
+* mixing multiple device streams in one logger would require routing, clock handling, multiple open files, and different sampling rates;
+* multi-device logging is a separate future feature.
+
+If two devices must be used simultaneously, the current practical approach is to run two logger instances on different ports.
+
+### Tested
+
+Confirmed:
+
+```text
+[✓] Firmware builds successfully
+[✓] Firmware uploads to M5StickC Plus2
+[✓] DEVICE_INFO is emitted by the device
+[✓] DEVICE_INFO contains MAC address
+[✓] DEVICE_INFO contains firmware version
+[✓] DEVICE_INFO is emitted before NEW_SESSION
+[✓] HTTP logger receives DEVICE_INFO
+[✓] HTTP logger continues to receive NEW_SESSION / START / DATA / STOP
+[✓] Wireless logging still works
+[✓] CSV writing still works
+[✓] Existing --device-id workflow still works
+```
+
+### Operational note
+
+During testing, Windows changed the Wi-Fi network profile from Private to Public after an update.
+
+This blocked inbound HTTP connections to the Python logger.
+
+Required setting:
+
+```text
+Windows Wi-Fi network profile = Private
+```
+
+If HTTP POST fails with:
+
+```text
+HTTP POST failed, code=-1
+```
+
+check:
+
+```text
+1. http_logger.py is running
+2. LOGGER_URL IP is correct
+3. Windows network profile is Private
+4. firewall allows Python on Private networks
+```
+
+### Result
+
+The branch successfully adds the first device identity layer.
+
+Current startup sequence:
+
+```csv
+EVENT,DEVICE_INFO,F0:24:F9:97:ED:08,motionblocks.logger.v0.5,...
+EVENT,NEW_SESSION,A001,...
+```
+
+The logger can now validate or resolve the device identity before registering sessions.
+
+### Recommended commit message
+
+```text
+Add device registry and MAC-based device resolution
+```
+
+### Next branch
+
+```text
+feature/selectable-sampling-rate
+```
+
+Goal:
+
+```text
+Allow selecting sampling rate at device startup: 5 / 10 / 25 / 50 / 100 Hz.
+```
+
+
+
 # Journal entry template
 
 ## YYYY-MM-DD
