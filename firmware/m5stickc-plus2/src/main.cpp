@@ -3,10 +3,13 @@
 #include <HTTPClient.h>    // HTTP-клиент ESP32 для отправки POST-запросов на Python logger
 #include "wifi_config.h"   // локальные Wi-Fi настройки: WIFI_SSID, WIFI_PASSWORD, LOGGER_URL
 #include <math.h>          // нужна для sqrt при расчёте acc_norm
+#include "freertos/FreeRTOS.h"  // FreeRTOS: очереди и задачи для async HTTP
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
 
 // ============================================================
-// MotionBlocks — IMU logger v0.7.0
+// MotionBlocks — IMU logger v0.8.0
 //
 // Текущий этап:
 // - session-aware IMU logger;
@@ -19,7 +22,9 @@
 // - READY screen shows Wi-Fi status and selected sample rate;
 // - REC screen shows Wi-Fi indicator;
 // - SAVED screen after STOP (1 секунда подтверждения);
-// - double-click window увеличен до 600 ms для удобства.
+// - double-click window увеличен до 600 ms для удобства;
+// - ASYNC HTTP: IMU и HTTP работают в разных задачах FreeRTOS;
+//   IMU на ядре 0, HTTP на ядре 1, очередь между ними.
 //
 // Важно:
 // - прошивка НЕ знает experiment_id;
@@ -61,7 +66,7 @@
 // Настройки записи
 // ------------------------------------------------------------
 
-static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.7.0";
+static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.8.0";
 
 static const uint32_t SAMPLE_RATES_HZ[] = {5, 10, 25, 50, 100};
 static const uint8_t SAMPLE_RATE_COUNT = sizeof(SAMPLE_RATES_HZ) / sizeof(SAMPLE_RATES_HZ[0]);
@@ -75,20 +80,8 @@ uint32_t sample_interval_ms = 1000 / sample_rate_hz;
 // Увеличено с 400 до 600 ms — удобнее для детей.
 static const uint32_t DOUBLE_CLICK_WINDOW_MS = 600;
 
-static const uint32_t HTTP_TIMEOUT_MS = 300;
-
-static const uint16_t HTTP_BATCH_MAX_LINES = 25;
-static const uint32_t HTTP_BATCH_MAX_AGE_MS = 500;
-
 // Длительность экрана SAVED после остановки записи.
 static const uint32_t SAVED_SCREEN_MS = 1200;
-
-HTTPClient recording_http_client;
-bool recording_http_client_started = false;
-
-String http_batch_buffer = "";
-uint16_t http_batch_line_count = 0;
-uint32_t http_batch_last_flush_ms = 0;
 
 
 // ------------------------------------------------------------
@@ -449,146 +442,190 @@ void connectToWifi() {
 
 
 // ------------------------------------------------------------
-// HTTP transport
+// Async HTTP transport — FreeRTOS queue
+//
+// Архитектура:
+//
+//   Ядро 0 — loop() / IMU / кнопки (высокий приоритет)
+//     emitProtocolLine(line)
+//       → Serial.println(line)          — немедленно
+//       → xQueueSend(http_queue, ...)   — кладём в очередь, не ждём HTTP
+//
+//   Ядро 1 — task_http (низкий приоритет)
+//     xQueueReceive(http_queue, ...)
+//       → накапливаем батч
+//       → HTTP POST когда батч полон или истёк таймер
+//
+// IMU опрашивается без пауз.
+// HTTP POST выполняется параллельно на другом ядре.
+//
+// Размер очереди HTTP_QUEUE_SIZE:
+//   При 100 Hz и POST занимающем 300ms накапливается до 30 строк.
+//   Размер 200 даёт запас на случай временных задержек сети.
+//   При переполнении строка теряется с предупреждением в Serial.
 // ------------------------------------------------------------
 
-void sendHttpOneShotLine(const String& line) {
-    if (!isWifiOk()) {
-        Serial.println("HTTP skipped: Wi-Fi not connected");
+static const uint16_t HTTP_QUEUE_SIZE      = 500;  // увеличен: буфер на случай задержек сети
+static const uint16_t HTTP_BATCH_MAX_LINES = 20;   // 20 строк = 5 батчей/сек при 100Hz
+static const uint32_t HTTP_BATCH_MAX_AGE_MS = 200; // flush по таймеру если батч не заполнился
+static const uint32_t HTTP_TIMEOUT_MS      = 2000;
+
+// Очередь строк от IMU-задачи к HTTP-задаче.
+// Передаём указатели на String* чтобы не копировать содержимое дважды.
+QueueHandle_t http_queue = nullptr;
+
+// Статистика потерь для диагностики.
+uint32_t http_queue_dropped = 0;
+
+
+void http_enqueue(const String& line) {
+    if (http_queue == nullptr || !isWifiOk()) {
         return;
     }
 
-    HTTPClient http;
-    http.begin(LOGGER_URL);
-    http.addHeader("Content-Type", "text/plain");
-    http.setTimeout(HTTP_TIMEOUT_MS);
+    // Создаём копию строки в heap — task_http освободит её.
+    String* s = new String(line);
 
-    int http_code = http.POST(line);
+    if (xQueueSend(http_queue, &s, 0) != pdTRUE) {
+        // Очередь полна — строка теряется.
+        delete s;
+        http_queue_dropped++;
 
-    if (http_code != 200) {
-        Serial.print("HTTP one-shot POST failed, code=");
-        Serial.println(http_code);
-    }
-
-    http.end();
-}
-
-void resetRecordingHttpClient() {
-    if (recording_http_client_started) {
-        recording_http_client.end();
-        recording_http_client_started = false;
+        if (http_queue_dropped % 10 == 1) {
+            Serial.print("[WARN] HTTP queue full, dropped=");
+            Serial.println(http_queue_dropped);
+        }
     }
 }
 
-bool ensureRecordingHttpClientStarted() {
-    if (recording_http_client_started) {
-        return true;
+
+// ------------------------------------------------------------
+// task_http — HTTP задача на ядре 0
+//
+// Забирает строки из очереди, накапливает батч,
+// отправляет POST когда батч полон или истёк таймер.
+//
+// Каждый POST использует свежий HTTPClient — надёжнее чем reuse
+// при высокой нагрузке и нестабильном Wi-Fi.
+// ------------------------------------------------------------
+
+void task_http(void* param) {
+    Serial.print("[HTTP] task_http running on core: ");
+    Serial.println(xPortGetCoreID());
+
+    String   batch_buffer = "";
+    uint16_t batch_count  = 0;
+
+    batch_buffer.reserve(2000);
+
+    auto reset_batch = [&]() {
+        batch_buffer = "";
+        batch_count  = 0;
+    };
+
+    // Отправить произвольный body одним POST.
+    auto post_body = [&](const String& body) {
+        if (!isWifiOk()) return;
+
+        HTTPClient tmp;
+        tmp.begin(LOGGER_URL);
+        tmp.addHeader("Content-Type", "text/plain");
+        tmp.setTimeout(HTTP_TIMEOUT_MS);
+        int code = tmp.POST(body);
+        tmp.end();
+
+        if (code != 200) {
+            Serial.print("[HTTP] POST failed, code=");
+            Serial.println(code);
+        }
+    };
+
+    auto flush_batch = [&]() {
+        if (batch_count == 0) return;
+        String body = batch_buffer;
+        uint16_t cnt = batch_count;
+        reset_batch();
+        post_body(body);
+    };
+
+    while (true) {
+        String* line_ptr = nullptr;
+
+        BaseType_t got = xQueueReceive(
+            http_queue,
+            &line_ptr,
+            pdMS_TO_TICKS(HTTP_BATCH_MAX_AGE_MS)
+        );
+
+        if (got == pdTRUE && line_ptr != nullptr) {
+            String line = *line_ptr;
+            delete line_ptr;
+
+            if (line.startsWith("DATA,")) {
+                if (batch_count > 0) batch_buffer += "\n";
+                batch_buffer += line;
+                batch_count++;
+
+                if (batch_count >= HTTP_BATCH_MAX_LINES) {
+                    flush_batch();
+                }
+            } else {
+                // Служебные события: сначала flush DATA, потом само событие
+                flush_batch();
+                post_body(line);
+            }
+        } else {
+            // Таймаут — flush по возрасту
+            flush_batch();
+        }
     }
-
-    if (!isWifiOk()) {
-        return false;
-    }
-
-    if (!recording_http_client.begin(LOGGER_URL)) {
-        Serial.println("Recording HTTP begin failed");
-        return false;
-    }
-
-    recording_http_client.addHeader("Content-Type", "text/plain");
-    recording_http_client.setTimeout(HTTP_TIMEOUT_MS);
-    recording_http_client.setReuse(true);
-
-    recording_http_client_started = true;
-    return true;
 }
 
-bool postRecordingHttpBody(const String& body) {
-    if (!isWifiOk()) {
-        resetRecordingHttpClient();
-        return false;
-    }
 
-    if (!ensureRecordingHttpClientStarted()) {
-        return false;
-    }
+// ------------------------------------------------------------
+// Запуск HTTP задачи
+// ------------------------------------------------------------
 
-    int http_code = recording_http_client.POST(body);
+void startHttpTask() {
+    http_queue = xQueueCreate(HTTP_QUEUE_SIZE, sizeof(String*));
 
-    if (http_code != 200) {
-        Serial.print("Recording HTTP POST failed, code=");
-        Serial.println(http_code);
-        resetRecordingHttpClient();
-        return false;
-    }
-
-    return true;
-}
-
-void resetHttpBatchBuffer() {
-    http_batch_buffer        = "";
-    http_batch_line_count    = 0;
-    http_batch_last_flush_ms = millis();
-}
-
-void flushHttpBatchBuffer() {
-    if (http_batch_line_count == 0) {
+    if (http_queue == nullptr) {
+        Serial.println("[ERROR] Failed to create HTTP queue");
         return;
     }
 
-    String body            = http_batch_buffer;
-    uint16_t lines_to_send = http_batch_line_count;
+    // Важно: loop() в Arduino ESP32 работает на ядре 1.
+    // Поэтому HTTP задачу запускаем на ядре 0 — разные ядра, нет конкуренции.
+    BaseType_t result = xTaskCreatePinnedToCore(
+        task_http,    // функция задачи
+        "http",       // имя задачи
+        16384,        // размер стека — HTTPClient + String требуют много места
+        nullptr,      // параметры
+        1,            // приоритет (1 = низкий)
+        nullptr,      // handle (не нужен)
+        0             // ядро 0 — loop() на ядре 1, HTTP на ядре 0
+    );
 
-    resetHttpBatchBuffer();
-
-    bool ok = postRecordingHttpBody(body);
-
-    if (!ok) {
-        Serial.print("HTTP batch lost, lines=");
-        Serial.println(lines_to_send);
-    }
-}
-
-void appendDataLineToHttpBatch(const String& line) {
-    if (http_batch_line_count == 0) {
-        http_batch_last_flush_ms = millis();
-        http_batch_buffer.reserve(3000);
+    if (result != pdPASS) {
+        Serial.println("[ERROR] Failed to start HTTP task");
     } else {
-        http_batch_buffer += "\n";
-    }
-
-    http_batch_buffer += line;
-    http_batch_line_count++;
-
-    bool batch_full = http_batch_line_count >= HTTP_BATCH_MAX_LINES;
-    bool batch_old  = (millis() - http_batch_last_flush_ms) >= HTTP_BATCH_MAX_AGE_MS;
-
-    if (batch_full || batch_old) {
-        flushHttpBatchBuffer();
+        Serial.println("[HTTP] Async HTTP task started on core 0");
+        Serial.print("[HTTP] loop() runs on core: ");
+        Serial.println(xPortGetCoreID());
     }
 }
 
-void sendHttpRecordingLine(const String& line) {
-    if (line.startsWith("DATA,")) {
-        appendDataLineToHttpBatch(line);
-        return;
-    }
 
-    // Для служебных событий во время записи — сначала flush DATA, потом событие.
-    flushHttpBatchBuffer();
-    postRecordingHttpBody(line);
-}
-
-void sendHttpLine(const String& line) {
-    if (is_recording) {
-        sendHttpRecordingLine(line);
-        return;
-    }
-    sendHttpOneShotLine(line);
-}
+// ------------------------------------------------------------
+// Единая отправка строки протокола
+//
+// Serial — немедленно (как раньше).
+// HTTP   — через очередь, без блокировки IMU.
+// ------------------------------------------------------------
 
 void emitProtocolLine(const String& line) {
     Serial.println(line);
-    sendHttpLine(line);
+    http_enqueue(line);
 }
 
 
@@ -783,8 +820,6 @@ void startRecord() {
     last_acc_norm  = 0.0f;
     last_sample_ms = millis();
 
-    resetHttpBatchBuffer();
-
     String line =
         String("EVENT,START,") +
         session_id + "," +
@@ -812,9 +847,6 @@ void stopRecord() {
         String(sample_count);
 
     emitProtocolLine(line);
-
-    resetRecordingHttpClient();
-    resetHttpBatchBuffer();
 
     is_recording = false;
 
@@ -1001,7 +1033,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    Serial.println("MotionBlocks IMU logger v0.7.0");
+    Serial.println("MotionBlocks IMU logger v0.8.0");
     Serial.println("Protocol:");
     Serial.println("EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms");
     Serial.println("EVENT,SAMPLE_RATE,sample_rate_hz,timestamp_ms");
@@ -1016,8 +1048,24 @@ void setup() {
     selectSampleRateAtStartup();
     connectToWifi();
 
+    // Запускаем HTTP задачу на ядре 0.
+    // loop() работает на ядре 1 — разные ядра, нет конкуренции за CPU.
+    startHttpTask();
+
     sendDeviceInfoEvent();
     sendSampleRateEvent();
+
+    // Пауза между SAMPLE_RATE и NEW_SESSION.
+    //
+    // Причина: оба события уходят в HTTP очередь асинхронно.
+    // Logger должен обработать SAMPLE_RATE и обновить sample_rate_hz
+    // ДО того как откроет CSV файл по событию NEW_SESSION.
+    // Без паузы NEW_SESSION может прийти раньше и файл получит
+    // имя с дефолтным значением 10Hz вместо реально выбранного.
+    //
+    // 500ms достаточно для одного HTTP POST round-trip.
+    delay(500);
+
     sendNewSessionEvent();
 
     drawIdleScreen();
