@@ -111,22 +111,8 @@ CSV_HEADER = [
 ]
 
 
-# ------------------------------------------------------------
-# Описание каналов текущей схемы данных.
-# ------------------------------------------------------------
-DEFAULT_CHANNELS = [
-    {"name": "ax", "kind": "acceleration", "axis": "x", "unit": "g"},
-    {"name": "ay", "kind": "acceleration", "axis": "y", "unit": "g"},
-    {"name": "az", "kind": "acceleration", "axis": "z", "unit": "g"},
-    {"name": "gx", "kind": "angular_velocity", "axis": "x", "unit": "deg_per_sec"},
-    {"name": "gy", "kind": "angular_velocity", "axis": "y", "unit": "deg_per_sec"},
-    {"name": "gz", "kind": "angular_velocity", "axis": "z", "unit": "deg_per_sec"},
-    {"name": "acc_norm", "kind": "derived_acceleration_norm", "unit": "g"},
-]
-
-
 # Статус для metadata-записей, созданных автоматически.
-AUTO_STATUS = "auto created. needs description."
+AUTO_STATUS = "draft"
 
 # Паттерн для поиска run_id в именах файлов.
 # Пример: run_A_session_A001_100Hz.csv → группа 1 = "A"
@@ -174,19 +160,6 @@ def save_json_list(path: Path, data: list[dict]) -> None:
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
-
-def session_number_from_id(session_id: str) -> Optional[int]:
-    """
-    Преобразовать session_id в числовой file_id.
-
-        A001 -> 1
-        A015 -> 15
-    """
-    if len(session_id) >= 2 and session_id[0].isalpha() and session_id[1:].isdigit():
-        return int(session_id[1:])
-
-    return None
 
 
 def normalize_mac_address(mac_address: str) -> str:
@@ -351,28 +324,29 @@ def create_draft_experiment_metadata(
 
 def create_draft_session_metadata(
     sessions_path: Path,
+    experiments_path: Path,
     experiment_id: str,
     device_id: str,
     session_id: str,
     recording_run_id: str,
     file_path: Path,
-    mac_address: Optional[str] = None,
     firmware_version: Optional[str] = None,
-    device_registry_record: Optional[dict] = None,
     sample_rate_hz: int = 10,
 ) -> None:
     """
     Добавить черновую запись о recording session в recording_sessions.json.
 
-    session_uid теперь включает recording_run_id:
-
-        EXP01_m5_001_A_A001
+    Формат v2:
+    - нет: file_role, mac_address, hardware_model, records_expected,
+            session_id (дубль), channels, tags, file_id, device_name
+    - есть: wrist (наследуется из эксперимента)
+    - schema_version ссылается на schema.json
+    - status = "draft"
 
     Если session_uid уже есть — не перезаписываем.
     """
     sessions = load_json_list(sessions_path)
 
-    # session_uid включает recording_run_id для уникальности.
     session_uid = f"{experiment_id}_{device_id}_{recording_run_id}_{session_id}"
 
     for item in sessions:
@@ -380,37 +354,34 @@ def create_draft_session_metadata(
             print(f"[METADATA] Existing session preserved: {session_uid}")
             return
 
-    file_id = session_number_from_id(session_id)
+    # Наследуем wrist из эксперимента
+    wrist = None
+    experiments = load_json_list(experiments_path)
+    for exp in experiments:
+        if exp.get("experiment_id") == experiment_id:
+            wrist = exp.get("default_wrist")
+            break
 
     draft = {
         "experiment_id": experiment_id,
         "device_id": device_id,
         "recording_run_id": recording_run_id,
         "device_session_id": session_id,
-        # session_id сохраняем для обратной совместимости
-        "session_id": session_id,
         "session_uid": session_uid,
-        "file_id": file_id,
         "file_name": file_path.name,
         "file_path": file_path.as_posix(),
-        "file_role": "raw_data",
         "data_format": "wide_csv",
         "schema_version": "motionblocks.sample.v0.1",
-        "mac_address": mac_address,
         "firmware_version": firmware_version,
-        "device_name": device_registry_record.get("device_name") if device_registry_record else None,
-        "hardware_model": device_registry_record.get("hardware_model") if device_registry_record else None,
         "movement_type": "unknown",
         "movement_label": "unknown",
         "subject_id": "unknown",
+        "wrist": wrist,
         "started_at": now_iso(),
         "sample_rate_hz": sample_rate_hz,
-        "records_expected": None,
         "records_actual": None,
-        "channels": DEFAULT_CHANNELS,
         "comment": "",
         "status": AUTO_STATUS,
-        "tags": [],
     }
 
     sessions.append(draft)
@@ -688,14 +659,13 @@ class SessionWriter:
 
                 create_draft_session_metadata(
                     sessions_path=self.sessions_path,
+                    experiments_path=self.experiments_path,
                     experiment_id=self.experiment_id,
                     device_id=self.require_device_id(),
                     session_id=session_id,
                     recording_run_id=run_id,
                     file_path=path,
-                    mac_address=self.mac_address,
                     firmware_version=self.firmware_version,
-                    device_registry_record=self.device_registry_record,
                     sample_rate_hz=self.sample_rate_hz,
                 )
 
