@@ -362,7 +362,7 @@ Firmware uses a local Wi-Fi config file:
 firmware/m5stickc-plus2/src/wifi_config.h
 ```
 
-This file contains:
+This file contains : 
 
 ```cpp
 WIFI_SSID
