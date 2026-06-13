@@ -2,24 +2,24 @@
 
 ## Date
 
-2026-06-13
+2026-06-13 (updated end of day)
 
 ## Current project phase
 
-Stage 4 — Wireless HTTP batch logging and preparation for safe data collection.
+Stage 5 — Safe data collection with recording_run_id and firmware UX improvements.
 
-The project has moved beyond initial device bring-up, wired Serial logging, display cleanup, basic Wi-Fi HTTP logging, device identity reporting, and selectable sampling-rate testing.
+The project has completed wireless HTTP batch logging, device identity, selectable sampling rate, recording_run_id implementation, safe file names, and firmware UX improvements.
 
 The current working pipeline is:
 
 ```text
-M5StickC Plus2
+M5StickC Plus2 (v0.7.0)
   → Wi-Fi
   → HTTP POST /line
   → one-line service events + batched DATA during recording
   → tools/http_logger.py
-  → raw CSV files
-  → draft metadata
+  → run_A_session_A001_100Hz.csv
+  → draft metadata with recording_run_id
 ```
 
 The previous USB Serial pipeline still exists and remains useful for debugging and fallback.
@@ -27,16 +27,9 @@ The previous USB Serial pipeline still exists and remains useful for debugging a
 Current immediate goal:
 
 ```text
-implement recording_run_id and safe file names
+update serial_logger.py with recording_run_id and safe file names
+then build tools/analyze_recordings.py
 ```
-
-Reason:
-
-```text
-device-local session_id such as A001 can repeat after device reset
-```
-
-Therefore raw files and metadata need an additional logger-side run identifier before larger datasets are collected.
 
 ---
 
@@ -61,16 +54,14 @@ M5StickC Plus2
 Current working firmware:
 
 ```text
-motionblocks.logger.v0.6.2 — selectable sampling rate + HTTP batch recording logger
+motionblocks.logger.v0.7.0 — selectable sampling rate + HTTP batch + UX improvements
 ```
 
 Current active branch:
 
 ```text
-feature/recording-runs-and-safe-file-names
+main (feature/recording-runs-and-safe-file-names merged)
 ```
-
-The next branch changes are expected to be in the Python logger / data layer, not in firmware.
 
 Current firmware capabilities:
 
@@ -88,12 +79,14 @@ Current firmware capabilities:
 * shows a startup splash screen;
 * shows Wi-Fi status / IP address on the READY screen;
 * shows selected sample rate on the READY screen;
-* shows current record metrics on the REC screen.
+* shows current record metrics on the REC screen;
+* shows Wi-Fi indicator (green/red dot) on the REC screen;
+* shows SAVED screen with sample count after stopping a record.
 
 Confirmed behavior:
 
 * Device starts with session `A001`.
-* Button A double click starts a new record.
+* Button A double click (600 ms window) starts a new record.
 * Button A single click stops the current record.
 * Button B switches to the next session.
 * `record_id` resets to `1` when session changes.
@@ -110,7 +103,7 @@ sqrt(ax*ax + ay*ay + az*az)
 
 Known firmware / transport limits:
 
-* `session_id` is device-local and can repeat after device reset.
+* `session_id` is device-local and can repeat after device reset (handled by logger-side `recording_run_id`).
 * `sample_rate_hz` means configured / selected rate, not verified effective rate.
 * Effective sampling rate must be calculated later from `DATA.device_timestamp_ms`.
 * Long recording stability and battery life are not yet measured.
@@ -355,15 +348,20 @@ Sampling-rate selection screen:
 
 ```text
 SAMPLE RATE
-5 / 10 / 25 / 50 / 100 Hz
-A NEXT
-B OK
+  5 Hz
+> 10 Hz       ← selected, green, size 2
+  25 Hz
+  50 Hz
+  100 Hz
+auto in 5s    ← only in auto-mode
 ```
+
+All 5 options are visible simultaneously. Button hints removed to avoid layout overflow. Selected option highlighted with `>` in green.
 
 Selection behavior:
 
 ```text
-If no button is pressed, 10 Hz is selected after timeout.
+If no button is pressed, 10 Hz is selected after 5s timeout.
 If Button A is pressed at least once, timeout is disabled.
 Button B confirms selection.
 ```
@@ -371,21 +369,28 @@ Button B confirms selection.
 READY screen:
 
 ```text
-WiFi <device_ip>
+WiFi <device_ip>          RATE <hz>Hz
 READY
 SESSION A001
-RATE <sample_rate>Hz
 A x2 START     B NEXT
 ```
 
 REC screen:
 
 ```text
-REC
+REC  ●         ← red dot + green/red Wi-Fi dot (top right)
 A001 / R1
 SMP <sample_count>
 ACC <acc_norm> g
 A STOP
+```
+
+SAVED screen (shown 1.2s after STOP):
+
+```text
+SAVED
+R<record_id>
+<sample_count> smp
 ```
 
 Display status:
@@ -394,55 +399,29 @@ Display status:
 working / acceptable for prototype
 ```
 
-Further visual polishing is not a priority now.
-
 ---
 
 ## Current data format decision
 
 Use simple raw CSV files for sensor data and readable JSON files for metadata.
 
-Current raw data path convention is still:
-
-```text
-data/raw/[experiment_id]/[device_id]/session_[session_id].csv
-```
-
-Example:
-
-```text
-data/raw/EXP01/m5_001/session_A001.csv
-```
-
-Current limitation:
-
-```text
-session_[session_id].csv is not safe across device resets
-```
-
-Reason:
-
-```text
-M5StickC can restart from session A001
-```
-
-Immediate planned replacement:
+Current raw data path convention:
 
 ```text
 data/raw/[experiment_id]/[device_id]/run_[recording_run_id]_session_[device_session_id]_[sample_rate_hz]Hz.csv
 ```
 
-Example target form:
+Example:
 
 ```text
-data/raw/EXP01/m5_001/run_0001_session_A001_100Hz.csv
+data/raw/EXP01/m5_001/run_A_session_A001_100Hz.csv
+data/raw/EXP01/m5_001/run_A_session_A002_100Hz.csv
+data/raw/EXP01/m5_001/run_B_session_A001_50Hz.csv
 ```
 
-The exact target convention will be finalized in:
+`recording_run_id` is a single uppercase letter (A, B, C, … Z, AA, AB, …) assigned by the logger at startup by scanning the device folder. It prevents file conflicts when the device resets and emits `A001` again.
 
-```text
-feature/recording-runs-and-safe-file-names
-```
+Old files from before this change (`session_A001.csv`) are not overwritten — the scanner ignores them.
 
 Generated data is local and normally ignored by Git.
 
@@ -458,14 +437,7 @@ data/metadata/recording_sessions.json
 data/metadata/devices.json
 ```
 
-Both loggers can create draft metadata records:
-
-```text
-tools/serial_logger.py
-tools/http_logger.py
-```
-
-Metadata generation is explicit and controlled by:
+Both loggers can create draft metadata records when launched with:
 
 ```powershell
 --create-metadata
@@ -498,76 +470,40 @@ The logger resolves or validates project-level `device_id` through:
 data/metadata/devices.json
 ```
 
-Current rule:
-
-```text
-firmware reports MAC address
-logger maps mac_address → device_id
-```
-
-If `--device-id` is provided, it remains an explicit override.
-
-### Experiment identifiers
-
-Use short technical experiment ids:
-
-```text
-EXP01
-EXP02
-EXP03
-```
-
-Human-readable names live in metadata:
-
-```text
-short_name
-title
-goal
-comments
-```
-
 ### Session and run identifiers
 
 Current firmware session ids are device-local:
 
 ```text
-A001
-A002
-A003
+A001 / A002 / A003
 ```
 
-Current limitation:
+Current `session_uid` format includes `recording_run_id`:
 
 ```text
-session_uid = [experiment_id]_[device_id]_[session_id]
+[experiment_id]_[device_id]_[recording_run_id]_[device_session_id]
 ```
 
-is not safe if the same device resets and emits `A001` again in the same experiment.
-
-Next data-layer change:
+Example:
 
 ```text
-recording_run_id
-device_session_id
-safe file names
+EXP01_m5_001_A_A001
 ```
 
-Current target metadata direction:
+Current metadata record includes:
 
 ```json
 {
   "experiment_id": "EXP01",
   "device_id": "m5_001",
-  "recording_run_id": "run_0001",
+  "recording_run_id": "A",
   "device_session_id": "A001",
   "session_id": "A001",
+  "session_uid": "EXP01_m5_001_A_A001",
   "sample_rate_hz": 100,
-  "file_name": "run_0001_session_A001_100Hz.csv",
-  "file_path": "data/raw/EXP01/m5_001/run_0001_session_A001_100Hz.csv"
+  "file_name": "run_A_session_A001_100Hz.csv",
+  "file_path": "data/raw/EXP01/m5_001/run_A_session_A001_100Hz.csv"
 }
-```
-
-`session_id` may be kept for backward compatibility while `device_session_id` makes the meaning explicit.
 
 ---
 
@@ -727,53 +663,38 @@ feature/display-layout
 feature/wifi-http-logger
 feature/device-info-event
 feature/selectable-sampling-rate
+feature/recording-runs-and-safe-file-names
 ```
 
 Current active branch:
 
 ```text
-feature/recording-runs-and-safe-file-names
+main
 ```
 
-Main goal of the active branch:
+Next planned branch:
 
 ```text
-make raw file names and metadata safe across device resets and repeated A001 sessions
+feature/serial-logger-recording-runs
+feature/analyze-recordings
 ```
 
 ---
 
 ## Current next actions
 
-### 1. Implement recording_run_id and safe file names
+### 1. Update serial_logger.py with recording_run_id
 
-Update:
-
-```text
-tools/http_logger.py
-tools/serial_logger.py
-```
-
-Target behavior:
+Apply the same changes as `http_logger.py`:
 
 ```text
-logger assigns recording_run_id
-device_session_id remains the firmware session id such as A001
-raw filenames are unique and readable
-metadata records include recording_run_id
-metadata records include device_session_id
-sample_rate_hz is included in safe filename
+recording_run_id assigned by logger
+safe file names: run_A_session_A001_100Hz.csv
+session_uid includes recording_run_id
+metadata fields: recording_run_id, device_session_id
 ```
 
-Target filename direction:
-
-```text
-run_0001_session_A001_100Hz.csv
-```
-
-Do not change firmware for this branch unless a concrete blocker appears.
-
-### 2. Create quick analysis tooling after safe file names
+### 2. Create quick analysis tooling
 
 Planned next tool:
 
@@ -784,8 +705,7 @@ tools/analyze_recordings.py
 Minimum useful behavior:
 
 ```text
-read one CSV file
-read all CSV files for one experiment
+read one CSV file or all CSV files for one experiment
 calculate duration_sec
 calculate effective_sample_rate_hz
 calculate dt_ms statistics
@@ -920,8 +840,7 @@ planned after safe file names
 
 ## Known Issues / Limitations
 
-* Current filename convention `session_A001.csv` is not safe across device reset.
-* Current `session_uid = experiment_id + device_id + session_id` is not safe if `A001` repeats.
+* `serial_logger.py` not yet updated with `recording_run_id` — still writes `session_A001.csv`.
 * `sample_rate_hz` currently means configured / selected rate, not verified effective rate.
 * Effective sample rate is not yet calculated automatically.
 * Long-record stability at 25 / 50 / 100 Hz still needs measurement.
@@ -936,8 +855,6 @@ planned after safe file names
 
 ## Open questions
 
-* How exactly should `recording_run_id` be generated: metadata scan, file scan, or both?
-* What final safe filename format should be adopted?
 * Should `sample_rate_hz` be renamed to `configured_sample_rate_hz`, or should a separate field be added later?
 * Should `effective_sample_rate_hz` be written back to metadata or kept in `data/analysis/`?
 * Should `records_actual` be updated by the logger after STOP?
@@ -946,14 +863,30 @@ planned after safe file names
 * Should events and DATA rows live in the same CSV, or should event logs be separated later?
 * Should `device_id` ever be stored in firmware, or always resolved by the logger?
 * When should SQLite be introduced?
-* Should Button A double click remain the start action, or should UX be simplified to start/stop toggle later?
 * Which first ML demo should be used with children: Edge Impulse, Orange Data Mining, or local scikit-learn?
 
 ---
 
 ## Recent Changes
 
-### 2026-06-13
+### 2026-06-13 (end of day)
+
+* Implemented `recording_run_id` in `tools/http_logger.py`.
+* Safe file names: `run_A_session_A001_100Hz.csv`.
+* `session_uid` now includes `recording_run_id`: `EXP01_m5_001_A_A001`.
+* `SessionWriter` made thread-safe with `threading.Lock`.
+* `IMU_NOT_UPDATED` event now written to CSV.
+* Logger console: DATA lines no longer printed per-sample; replaced with `[REC]` status every 2s and `[STOP]` summary with duration and file name.
+* Firmware bumped to v0.7.0.
+* Sample rate selection screen: all 5 options visible simultaneously, button hints removed.
+* Double-click window increased from 400 ms to 600 ms.
+* Wi-Fi indicator (green/red dot) added to REC screen.
+* SAVED screen shown 1.2s after STOP.
+* Screen refresh changed from sample counter to time-based (200 ms).
+* DATA line in firmware uses `snprintf` static buffer instead of `String` concatenation.
+* Branch `feature/recording-runs-and-safe-file-names` merged to `main`.
+
+### 2026-06-13 (earlier)
 
 * Added `EVENT,DEVICE_INFO` and MAC-based device resolution.
 * Added startup sampling-rate selection: 5 / 10 / 25 / 50 / 100 Hz.
@@ -962,10 +895,6 @@ planned after safe file names
 * Tested HTTP keep-alive and rejected it as insufficient.
 * Implemented HTTP batch mode for `DATA` rows during recording.
 * Confirmed 100 Hz works in current HTTP batch test.
-* Updated `http_logger.py` comments to document newline-separated batch support.
-* Rewrote `project_brief.md` using project-brief artifact conventions.
-* Created session summary for the HTTP batch / analysis planning session.
-* New immediate next step: introduce `recording_run_id` and safe file names.
 
 ### 2026-06-10
 
