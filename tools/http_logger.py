@@ -3,6 +3,7 @@ import csv  # нужна для записи EVENT/DATA строк в CSV-фай
 import json  # нужна для чтения и записи metadata-файлов experiments.json и recording_sessions.json
 import re  # нужна для поиска run_id в именах существующих файлов
 import threading  # нужна для Lock — защиты от одновременной записи в нескольких потоках
+import time  # нужна для монотонного времени при расчёте duration_sec после STOP
 from datetime import datetime  # нужна для создания timestamp в metadata, например started_at
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # нужны для создания простого HTTP-сервера и обработки GET/POST запросов
 from pathlib import Path  # нужна для удобной и безопасной работы с путями к файлам и папкам
@@ -477,6 +478,14 @@ class SessionWriter:
         # Lock для thread-safe записи в файл.
         self._lock = threading.Lock()
 
+        # Состояние текущей записи — для вывода в консоль.
+        # Обновляется при START / DATA / STOP.
+        self._current_record_id: Optional[str] = None
+        self._current_record_session_id: Optional[str] = None
+        self._current_record_sample_count: int = 0
+        self._current_record_start_ms: Optional[float] = None
+        self._last_data_print_ms: float = 0.0
+
     def require_device_id(self) -> str:
         """
         Вернуть эффективный device_id.
@@ -854,6 +863,24 @@ class SessionWriter:
             )
             self.current_file.flush()
 
+            # Считаем сэмплы текущей записи.
+            # record_id может смениться — сбрасываем счётчик при смене.
+            if self._current_record_id != record_id or self._current_record_session_id != session_id:
+                self._current_record_id = record_id
+                self._current_record_session_id = session_id
+                self._current_record_sample_count = 0
+
+            self._current_record_sample_count += 1
+
+            # Периодический вывод статуса — раз в 2 секунды.
+            now_ms = time.monotonic() * 1000
+            if now_ms - self._last_data_print_ms >= 2000:
+                self._last_data_print_ms = now_ms
+                print(
+                    f"[REC] {session_id}/R{record_id} — "
+                    f"{self._current_record_sample_count} samples"
+                )
+
 
 def handle_event(parts: list[str], writer: SessionWriter) -> None:
     """
@@ -920,6 +947,12 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             sample_count="",
         )
 
+        writer._current_record_start_ms = time.monotonic() * 1000
+        writer._current_record_sample_count = 0
+        writer._current_record_id = parts[3]
+        writer._current_record_session_id = parts[2]
+        writer._last_data_print_ms = time.monotonic() * 1000
+
         print(f"[START] session={parts[2]}, record={parts[3]}")
         return
 
@@ -936,10 +969,20 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             sample_count=parts[5],
         )
 
+        # Итоговая строка с duration и именем файла.
+        duration_str = ""
+        if writer._current_record_start_ms is not None:
+            duration_sec = (time.monotonic() * 1000 - writer._current_record_start_ms) / 1000
+            duration_str = f", duration={duration_sec:.1f}s"
+
+        file_name = writer.current_path.name if writer.current_path else "?"
+
         print(
-            f"[STOP] session={parts[2]}, "
-            f"record={parts[3]}, samples={parts[5]}"
+            f"[STOP] session={parts[2]}, record={parts[3]}, "
+            f"samples={parts[5]}{duration_str}, file={file_name}"
         )
+
+        writer._current_record_start_ms = None
         return
 
     if event_type == "IMU_NOT_UPDATED":
@@ -977,14 +1020,13 @@ def handle_protocol_line(line: str, writer: SessionWriter) -> None:
     if not line:
         return
 
-    print(line)
-
     parts = line.split(",")
 
     if not parts:
         return
 
     if parts[0] == "EVENT":
+        print(line)
         handle_event(parts, writer)
         return
 

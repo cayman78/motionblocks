@@ -6,17 +6,20 @@
 
 
 // ============================================================
-// MotionBlocks — IMU logger v0.6.2
+// MotionBlocks — IMU logger v0.7.0
 //
 // Текущий этап:
 // - session-aware IMU logger;
 // - button-controlled recording;
-// - selectable sampling rate at startup;
+// - selectable sampling rate at startup (все варианты видны на экране);
 // - DEVICE_INFO event with MAC address and firmware version;
 // - Serial output preserved for debugging / serial_logger.py;
 // - Wi-Fi HTTP output to Python http_logger.py;
-// - experimental HTTP batch mode during active recording;
-// - READY screen shows Wi-Fi status and selected sample rate.
+// - HTTP batch mode during active recording;
+// - READY screen shows Wi-Fi status and selected sample rate;
+// - REC screen shows Wi-Fi indicator;
+// - SAVED screen after STOP (1 секунда подтверждения);
+// - double-click window увеличен до 600 ms для удобства.
 //
 // Важно:
 // - прошивка НЕ знает experiment_id;
@@ -41,21 +44,16 @@
 //
 // 1. Serial
 //    Все строки протокола печатаются в Serial.
-//    Это нужно для отладки и совместимости с serial_logger.py.
 //
 // 2. HTTP one-shot
-//    Служебные события в IDLE отправляются отдельными POST-запросами:
+//    Служебные события в IDLE:
 //    DEVICE_INFO, SAMPLE_RATE, NEW_SESSION.
 //
 // 3. HTTP batch mode during recording
-//    START / STOP отправляются сразу через один переиспользуемый HTTPClient.
-//    DATA во время записи печатаются в Serial сразу, но по HTTP отправляются
-//    пачками до 25 строк или не реже чем раз в 500 ms.
+//    START / STOP отправляются сразу.
+//    DATA во время записи отправляются пачками до 25 строк
+//    или не реже чем раз в 500 ms.
 //    Перед STOP буфер DATA принудительно сбрасывается.
-//    После STOP соединение закрывается.
-//
-// Это эксперимент: проверяем, достаточно ли HTTP batch mode,
-// чтобы приблизиться к 25 / 50 / 100 Hz без перехода на TCP stream.
 // ============================================================
 
 
@@ -63,51 +61,27 @@
 // Настройки записи
 // ------------------------------------------------------------
 
-// Версия прошивки.
-// Используется в DEVICE_INFO, чтобы logger понимал,
-// какой код работает на устройстве.
-static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.6.2";
+static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.7.0";
 
-// Доступные частоты дискретизации.
-// Выбираются при включении устройства.
 static const uint32_t SAMPLE_RATES_HZ[] = {5, 10, 25, 50, 100};
 static const uint8_t SAMPLE_RATE_COUNT = sizeof(SAMPLE_RATES_HZ) / sizeof(SAMPLE_RATES_HZ[0]);
 static const uint8_t DEFAULT_SAMPLE_RATE_INDEX = 1;  // 10 Hz
 
-// Окно выбора частоты при старте.
-// Если пользователь ничего не нажал, будет выбрана частота по умолчанию.
 static const uint32_t SAMPLE_RATE_SELECT_TIMEOUT_MS = 5000;
 
-// Текущая выбранная частота.
-// По умолчанию 10 Hz.
 uint32_t sample_rate_hz = SAMPLE_RATES_HZ[DEFAULT_SAMPLE_RATE_INDEX];
 uint32_t sample_interval_ms = 1000 / sample_rate_hz;
 
-// Максимальный интервал между двумя кликами Button A,
-// чтобы считать их двойным нажатием.
-static const uint32_t DOUBLE_CLICK_WINDOW_MS = 400;
+// Увеличено с 400 до 600 ms — удобнее для детей.
+static const uint32_t DOUBLE_CLICK_WINDOW_MS = 600;
 
-// Timeout HTTP-запроса.
-// Важно: слишком большой timeout может тормозить запись,
-// если сервер недоступен.
 static const uint32_t HTTP_TIMEOUT_MS = 300;
 
-// Экспериментальный HTTP batch mode только для активной записи.
-//
-// Служебные события в IDLE:
-//   DEVICE_INFO / SAMPLE_RATE / NEW_SESSION
-// отправляются обычным one-shot HTTP POST.
-//
-// В режиме записи:
-//   START / STOP отправляются сразу;
-//   DATA печатаются в Serial сразу;
-//   DATA по HTTP отправляются пачками через переиспользуемый HTTPClient.
-//
-// Цель эксперимента:
-// снизить количество HTTP POST-запросов и проверить,
-// позволяет ли batch mode приблизиться к 25 / 50 / 100 Hz по Wi-Fi.
 static const uint16_t HTTP_BATCH_MAX_LINES = 25;
 static const uint32_t HTTP_BATCH_MAX_AGE_MS = 500;
+
+// Длительность экрана SAVED после остановки записи.
+static const uint32_t SAVED_SCREEN_MS = 1200;
 
 HTTPClient recording_http_client;
 bool recording_http_client_started = false;
@@ -118,20 +92,30 @@ uint32_t http_batch_last_flush_ms = 0;
 
 
 // ------------------------------------------------------------
+// Буфер для DATA строки
+//
+// Используем статический буфер вместо String concatenation
+// чтобы снизить heap fragmentation на ESP32 при 100 Hz.
+// ------------------------------------------------------------
+
+static char data_line_buf[128];
+
+
+// ------------------------------------------------------------
 // Цвета
 // ------------------------------------------------------------
 
-static const uint16_t MB_BLACK = BLACK;
-static const uint16_t MB_WHITE = WHITE;
-static const uint16_t MB_GREEN = GREEN;
-static const uint16_t MB_RED = RED;
-static const uint16_t MB_GREY = 0xC618;
+static const uint16_t MB_BLACK    = BLACK;
+static const uint16_t MB_WHITE    = WHITE;
+static const uint16_t MB_GREEN    = GREEN;
+static const uint16_t MB_RED      = RED;
+static const uint16_t MB_GREY     = 0xC618;
 static const uint16_t MB_DARKGREY = 0x7BEF;
+static const uint16_t MB_YELLOW   = 0xFFE0;
 
 
 // ------------------------------------------------------------
 // Координаты layout
-// ------------------------------------------------------------
 //
 // Экран M5StickC Plus2 в landscape после setRotation(1):
 // примерно 240 x 135.
@@ -148,46 +132,31 @@ static const int MAIN_X = 34;
 // Состояние сессии / записи
 // ------------------------------------------------------------
 
-// Номер текущей сессии.
-// На экране и в протоколе будет отображаться как A001, A002, A003...
 uint32_t session_number = 1;
-
-// Номер текущей попытки внутри сессии.
-uint32_t record_id = 1;
-
-// Номер сэмпла внутри текущей попытки.
-uint32_t sample_id = 0;
-
-// Количество сэмплов внутри текущей попытки.
-uint32_t sample_count = 0;
-
-// Идёт ли сейчас запись.
-bool is_recording = false;
-
-// Время последнего сэмпла.
+uint32_t record_id      = 1;
+uint32_t sample_id      = 0;
+uint32_t sample_count   = 0;
+bool     is_recording   = false;
 uint32_t last_sample_ms = 0;
+float    last_acc_norm  = 0.0f;
 
-// Последнее значение нормы ускорения.
-// Используется только для экрана.
-float last_acc_norm = 0.0f;
+// Количество сэмплов последней завершённой записи.
+// Показывается на экране SAVED.
+uint32_t last_record_sample_count = 0;
 
 
 // ------------------------------------------------------------
 // Состояние кнопок
 // ------------------------------------------------------------
 
-// Время первого клика Button A.
-uint32_t last_click_ms = 0;
-
-// Ждём ли второй клик Button A для double click.
-bool waiting_for_second_click = false;
+uint32_t last_click_ms          = 0;
+bool     waiting_for_second_click = false;
 
 
 // ------------------------------------------------------------
 // Формирование session_id
 //
 // session_number = 1  -> A001
-// session_number = 2  -> A002
 // session_number = 15 -> A015
 // ------------------------------------------------------------
 
@@ -197,29 +166,19 @@ void getSessionId(char* buffer, size_t buffer_size) {
 
 
 // ------------------------------------------------------------
-// Wi-Fi status text
-//
-// Используется на READY-экране.
-// Если Wi-Fi подключён, показываем IP.
-// Если нет — показываем WiFi OFF.
+// Wi-Fi status
 // ------------------------------------------------------------
 
-String getWifiStatusText() {
-    if (WiFi.status() == WL_CONNECTED) {
-        return "WiFi " + WiFi.localIP().toString();
-    }
-
-    return "WiFi OFF";
+bool isWifiOk() {
+    return WiFi.status() == WL_CONNECTED;
 }
 
-
-// ------------------------------------------------------------
-// Получение MAC-адреса устройства
-//
-// Это техническая аппаратная идентичность устройства.
-// Читаемый device_id, например m5_001, назначается не здесь,
-// а на стороне Python logger / devices.json.
-// ------------------------------------------------------------
+String getWifiStatusText() {
+    if (isWifiOk()) {
+        return "WiFi " + WiFi.localIP().toString();
+    }
+    return "WiFi OFF";
+}
 
 String getDeviceMacAddress() {
     return WiFi.macAddress();
@@ -228,9 +187,6 @@ String getDeviceMacAddress() {
 
 // ------------------------------------------------------------
 // Экран: вертикальная надпись LOGGER
-//
-// Не вращаем текст через setRotation.
-// Просто рисуем буквы столбиком — так меньше риска сломать ориентацию.
 // ------------------------------------------------------------
 
 void drawVerticalLoggerLabel() {
@@ -238,8 +194,8 @@ void drawVerticalLoggerLabel() {
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_GREY, MB_BLACK);
 
-    int x = RAIL_X;
-    int y = 8;
+    int x    = RAIL_X;
+    int y    = 8;
     int step = 20;
 
     M5.Display.drawString("L", x, y + step * 0);
@@ -279,6 +235,12 @@ void showSplashScreen() {
 
 // ------------------------------------------------------------
 // Экран выбора частоты дискретизации
+//
+// Показываем все 5 вариантов.
+// Текущий выбранный выделен зелёным и стрелкой.
+// Остальные серые.
+// Подсказки кнопок убраны — освобождают место для списка.
+// Countdown показывается только в auto-mode.
 // ------------------------------------------------------------
 
 void drawSampleRateSelectionScreen(uint8_t selected_index, uint32_t remaining_ms) {
@@ -287,43 +249,48 @@ void drawSampleRateSelectionScreen(uint8_t selected_index, uint32_t remaining_ms
 
     drawVerticalLoggerLabel();
 
-    uint32_t selected_rate = SAMPLE_RATES_HZ[selected_index];
-
-    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.setTextSize(2);
-    M5.Display.drawString("SAMPLE", MAIN_X, 16);
-    M5.Display.drawString("RATE", MAIN_X, 40);
-
-    M5.Display.setTextColor(MB_GREEN, MB_BLACK);
-    M5.Display.setTextSize(3);
-    M5.Display.drawString(String(selected_rate) + " Hz", MAIN_X, 70);
-
+    // Заголовок
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.setTextSize(1);
-    M5.Display.drawString("A NEXT", MAIN_X, 116);
-    M5.Display.drawString("B OK", 120, 116);
+    M5.Display.drawString("SAMPLE RATE", MAIN_X, 4);
 
-    M5.Display.setTextColor(MB_GREY, MB_BLACK);
-    M5.Display.drawString("auto 10Hz in " + String((remaining_ms + 999) / 1000) + "s", MAIN_X, 128);
+    // Список всех вариантов.
+    // Экран 135px высота, заголовок ~14px, countdown ~10px снизу.
+    // Доступно ~111px на 5 строк → ~22px на строку.
+    int list_y = 18;
+    int row_h  = 22;
+
+    for (uint8_t i = 0; i < SAMPLE_RATE_COUNT; i++) {
+        int y = list_y + i * row_h;
+
+        if (i == selected_index) {
+            M5.Display.setTextColor(MB_GREEN, MB_BLACK);
+            M5.Display.setTextSize(2);
+            M5.Display.drawString("> " + String(SAMPLE_RATES_HZ[i]) + " Hz", MAIN_X, y);
+        } else {
+            M5.Display.setTextColor(MB_GREY, MB_BLACK);
+            M5.Display.setTextSize(1);
+            M5.Display.drawString("  " + String(SAMPLE_RATES_HZ[i]) + " Hz", MAIN_X + 8, y + 6);
+        }
+    }
+
+    // Countdown только в auto-mode, внизу экрана
+    if (remaining_ms > 0) {
+        M5.Display.setTextSize(1);
+        M5.Display.setTextColor(MB_GREY, MB_BLACK);
+        M5.Display.drawString("auto in " + String((remaining_ms + 999) / 1000) + "s", MAIN_X, 126);
+    }
 }
 
 
 // ------------------------------------------------------------
 // Выбор частоты при старте
-//
-// Button A переключает режим:
-//   5 → 10 → 25 → 50 → 100 → 5
-//
-// Button B подтверждает выбор.
-//
-// Если ничего не нажали за SAMPLE_RATE_SELECT_TIMEOUT_MS,
-// выбирается 10 Hz.
 // ------------------------------------------------------------
 
 void selectSampleRateAtStartup() {
     uint8_t selected_index = DEFAULT_SAMPLE_RATE_INDEX;
 
-    uint32_t start_ms = millis();
+    uint32_t start_ms    = millis();
     uint32_t last_redraw_ms = 0;
 
     bool manual_selection_started = false;
@@ -333,7 +300,7 @@ void selectSampleRateAtStartup() {
     while (true) {
         M5.update();
 
-        uint32_t elapsed_ms = millis() - start_ms;
+        uint32_t elapsed_ms   = millis() - start_ms;
         uint32_t remaining_ms = 0;
 
         if (!manual_selection_started && elapsed_ms < SAMPLE_RATE_SELECT_TIMEOUT_MS) {
@@ -342,11 +309,7 @@ void selectSampleRateAtStartup() {
 
         if (M5.BtnA.wasClicked()) {
             manual_selection_started = true;
-
             selected_index = (selected_index + 1) % SAMPLE_RATE_COUNT;
-
-            // После первого нажатия A таймаут больше не действует.
-            // Пользователь сам завершает выбор кнопкой B.
             drawSampleRateSelectionScreen(selected_index, 0);
         }
 
@@ -354,12 +317,10 @@ void selectSampleRateAtStartup() {
             break;
         }
 
-        // Если пользователь ничего не нажимал, работает auto-select timeout.
         if (!manual_selection_started && elapsed_ms >= SAMPLE_RATE_SELECT_TIMEOUT_MS) {
             break;
         }
 
-        // Обновляем countdown примерно раз в секунду только в auto-mode.
         if (!manual_selection_started && millis() - last_redraw_ms > 1000) {
             last_redraw_ms = millis();
             drawSampleRateSelectionScreen(selected_index, remaining_ms);
@@ -368,13 +329,14 @@ void selectSampleRateAtStartup() {
         delay(20);
     }
 
-    sample_rate_hz = SAMPLE_RATES_HZ[selected_index];
-    sample_interval_ms = 1000 / sample_rate_hz;
+    sample_rate_hz      = SAMPLE_RATES_HZ[selected_index];
+    sample_interval_ms  = 1000 / sample_rate_hz;
 
     Serial.print("Selected sample rate: ");
     Serial.print(sample_rate_hz);
     Serial.println(" Hz");
 
+    // Подтверждение выбора
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
     drawVerticalLoggerLabel();
@@ -390,14 +352,14 @@ void selectSampleRateAtStartup() {
     delay(1000);
 }
 
+
 // ------------------------------------------------------------
-// Экран Wi-Fi connection
+// Экраны Wi-Fi
 // ------------------------------------------------------------
 
 void drawWifiConnectingScreen() {
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
-
     drawVerticalLoggerLabel();
 
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
@@ -409,11 +371,9 @@ void drawWifiConnectingScreen() {
     M5.Display.drawString("Connecting...", MAIN_X, 58);
 }
 
-
 void drawWifiOkScreen() {
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
-
     drawVerticalLoggerLabel();
 
     M5.Display.setTextColor(MB_GREEN, MB_BLACK);
@@ -427,11 +387,9 @@ void drawWifiOkScreen() {
     delay(2000);
 }
 
-
 void drawWifiFailScreen() {
     M5.Display.fillScreen(MB_BLACK);
     M5.Display.setTextDatum(top_left);
-
     drawVerticalLoggerLabel();
 
     M5.Display.setTextColor(MB_RED, MB_BLACK);
@@ -448,9 +406,6 @@ void drawWifiFailScreen() {
 
 // ------------------------------------------------------------
 // Подключение к Wi-Fi
-//
-// Подключаем устройство как Wi-Fi station.
-// Если подключение успешно, устройство получает IP в локальной сети.
 // ------------------------------------------------------------
 
 void connectToWifi() {
@@ -468,7 +423,7 @@ void connectToWifi() {
     WiFi.setSleep(false);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-    uint32_t start_ms = millis();
+    uint32_t start_ms         = millis();
     const uint32_t timeout_ms = 15000;
 
     while (WiFi.status() != WL_CONNECTED && millis() - start_ms < timeout_ms) {
@@ -482,7 +437,6 @@ void connectToWifi() {
         Serial.println("Wi-Fi connected.");
         Serial.print("IP address: ");
         Serial.println(WiFi.localIP());
-
         drawWifiOkScreen();
         return;
     }
@@ -490,40 +444,21 @@ void connectToWifi() {
     Serial.println("Wi-Fi connection failed.");
     Serial.print("Wi-Fi status code: ");
     Serial.println(WiFi.status());
-
     drawWifiFailScreen();
 }
 
 
 // ------------------------------------------------------------
-// Отправка одной строки протокола по HTTP
-//
-// На вход подаётся та же строка, которая печатается в Serial:
-//
-//   EVENT,NEW_SESSION,A001,12345
-//   EVENT,START,A001,1,13000
-//   DATA,A001,1,1,13100,...
-//   EVENT,STOP,A001,1,19000,60
-//
-// Python HTTP logger принимает её через:
-//
-//   POST /line
-//
-// Важно:
-// - если Wi-Fi не подключён, строка не отправляется по HTTP;
-// - Serial при этом продолжает работать;
-// - успешные POST не печатаем, чтобы не засорять Serial Monitor;
-// - ошибки печатаем в Serial для диагностики.
+// HTTP transport
 // ------------------------------------------------------------
 
 void sendHttpOneShotLine(const String& line) {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (!isWifiOk()) {
         Serial.println("HTTP skipped: Wi-Fi not connected");
         return;
     }
 
     HTTPClient http;
-
     http.begin(LOGGER_URL);
     http.addHeader("Content-Type", "text/plain");
     http.setTimeout(HTTP_TIMEOUT_MS);
@@ -538,28 +473,24 @@ void sendHttpOneShotLine(const String& line) {
     http.end();
 }
 
-
 void resetRecordingHttpClient() {
     if (recording_http_client_started) {
         recording_http_client.end();
         recording_http_client_started = false;
-        Serial.println("Recording HTTP client closed");
     }
 }
-
 
 bool ensureRecordingHttpClientStarted() {
     if (recording_http_client_started) {
         return true;
     }
 
-    if (WiFi.status() != WL_CONNECTED) {
+    if (!isWifiOk()) {
         return false;
     }
 
     if (!recording_http_client.begin(LOGGER_URL)) {
         Serial.println("Recording HTTP begin failed");
-        recording_http_client_started = false;
         return false;
     }
 
@@ -568,21 +499,16 @@ bool ensureRecordingHttpClientStarted() {
     recording_http_client.setReuse(true);
 
     recording_http_client_started = true;
-    Serial.println("Recording HTTP client opened for batch mode with keep-alive reuse enabled");
-
     return true;
 }
 
-
 bool postRecordingHttpBody(const String& body) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Recording HTTP skipped: Wi-Fi not connected");
+    if (!isWifiOk()) {
         resetRecordingHttpClient();
         return false;
     }
 
     if (!ensureRecordingHttpClientStarted()) {
-        Serial.println("Recording HTTP skipped: client not ready");
         return false;
     }
 
@@ -591,9 +517,6 @@ bool postRecordingHttpBody(const String& body) {
     if (http_code != 200) {
         Serial.print("Recording HTTP POST failed, code=");
         Serial.println(http_code);
-
-        // Если соединение сломалось, закрываем клиент.
-        // Следующая отправка попробует открыть соединение заново.
         resetRecordingHttpClient();
         return false;
     }
@@ -601,20 +524,18 @@ bool postRecordingHttpBody(const String& body) {
     return true;
 }
 
-
 void resetHttpBatchBuffer() {
-    http_batch_buffer = "";
-    http_batch_line_count = 0;
+    http_batch_buffer        = "";
+    http_batch_line_count    = 0;
     http_batch_last_flush_ms = millis();
 }
-
 
 void flushHttpBatchBuffer() {
     if (http_batch_line_count == 0) {
         return;
     }
 
-    String body = http_batch_buffer;
+    String body            = http_batch_buffer;
     uint16_t lines_to_send = http_batch_line_count;
 
     resetHttpBatchBuffer();
@@ -627,7 +548,6 @@ void flushHttpBatchBuffer() {
     }
 }
 
-
 void appendDataLineToHttpBatch(const String& line) {
     if (http_batch_line_count == 0) {
         http_batch_last_flush_ms = millis();
@@ -639,16 +559,13 @@ void appendDataLineToHttpBatch(const String& line) {
     http_batch_buffer += line;
     http_batch_line_count++;
 
-    uint32_t now = millis();
-
     bool batch_full = http_batch_line_count >= HTTP_BATCH_MAX_LINES;
-    bool batch_old = now - http_batch_last_flush_ms >= HTTP_BATCH_MAX_AGE_MS;
+    bool batch_old  = (millis() - http_batch_last_flush_ms) >= HTTP_BATCH_MAX_AGE_MS;
 
     if (batch_full || batch_old) {
         flushHttpBatchBuffer();
     }
 }
-
 
 void sendHttpRecordingLine(const String& line) {
     if (line.startsWith("DATA,")) {
@@ -656,34 +573,18 @@ void sendHttpRecordingLine(const String& line) {
         return;
     }
 
-    // Для служебных событий во время записи сохраняем порядок:
-    // сначала досылаем накопленные DATA, затем отправляем событие.
+    // Для служебных событий во время записи — сначала flush DATA, потом событие.
     flushHttpBatchBuffer();
     postRecordingHttpBody(line);
 }
-
 
 void sendHttpLine(const String& line) {
     if (is_recording) {
         sendHttpRecordingLine(line);
         return;
     }
-
     sendHttpOneShotLine(line);
 }
-
-
-// ------------------------------------------------------------
-// Единая отправка строки протокола
-//
-// Сейчас строка уходит в два канала:
-//
-//   1. Serial — для отладки и совместимости со старым serial_logger.py
-//   2. HTTP   — для беспроводного http_logger.py
-//               DATA во время записи отправляются батчами
-//
-// Это позволяет не менять сам формат протокола.
-// ------------------------------------------------------------
 
 void emitProtocolLine(const String& line) {
     Serial.println(line);
@@ -692,16 +593,7 @@ void emitProtocolLine(const String& line) {
 
 
 // ------------------------------------------------------------
-// Отправка события DEVICE_INFO
-//
-// Это событие сообщает logger'у техническую идентичность
-// устройства: MAC-адрес и версию прошивки.
-//
-// Важно:
-// - firmware не назначает device_id;
-// - logger сопоставляет mac_address → device_id;
-// - событие отправляется до NEW_SESSION;
-// - событие уходит в оба канала: Serial и HTTP.
+// Протокольные события
 // ------------------------------------------------------------
 
 void sendDeviceInfoEvent() {
@@ -710,31 +602,16 @@ void sendDeviceInfoEvent() {
         getDeviceMacAddress() + "," +
         String(FIRMWARE_VERSION) + "," +
         String(millis());
-
     emitProtocolLine(line);
 }
-
-
-// ------------------------------------------------------------
-// Отправка события SAMPLE_RATE
-//
-// Это событие сообщает logger'у фактическую частоту
-// дискретизации, выбранную при старте устройства.
-// ------------------------------------------------------------
 
 void sendSampleRateEvent() {
     String line =
         String("EVENT,SAMPLE_RATE,") +
         String(sample_rate_hz) + "," +
         String(millis());
-
     emitProtocolLine(line);
 }
-
-
-// ------------------------------------------------------------
-// Отправка события NEW_SESSION
-// ------------------------------------------------------------
 
 void sendNewSessionEvent() {
     char session_id[8];
@@ -744,8 +621,23 @@ void sendNewSessionEvent() {
         String("EVENT,NEW_SESSION,") +
         session_id + "," +
         String(millis());
-
     emitProtocolLine(line);
+}
+
+
+// ------------------------------------------------------------
+// Wi-Fi индикатор для REC экрана
+//
+// Маленький кружок в правом верхнем углу:
+//   зелёный = Wi-Fi есть
+//   красный  = Wi-Fi нет
+//
+// Перерисовываем только кружок, без перерисовки всего экрана.
+// ------------------------------------------------------------
+
+void drawWifiIndicator() {
+    uint16_t color = isWifiOk() ? MB_GREEN : MB_RED;
+    M5.Display.fillCircle(SCREEN_W - 10, 10, 6, color);
 }
 
 
@@ -762,18 +654,18 @@ void drawIdleScreen() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    // Wi-Fi status / IP address
+    // Wi-Fi status / IP
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(MB_GREY, MB_BLACK);
     M5.Display.drawString(getWifiStatusText(), MAIN_X, 4);
     M5.Display.drawString("RATE " + String(sample_rate_hz) + "Hz", 160, 4);
 
-    // Главный статус
+    // READY
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(MB_GREEN, MB_BLACK);
     M5.Display.drawString("READY", MAIN_X, 22);
 
-    // Сессия
+    // SESSION
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("SESSION", MAIN_X, 66);
@@ -782,7 +674,7 @@ void drawIdleScreen() {
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString(session_id, MAIN_X, 90);
 
-    // Подсказки по кнопкам
+    // Подсказки кнопок
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("A x2 START", MAIN_X, 122);
@@ -793,27 +685,24 @@ void drawIdleScreen() {
 // ------------------------------------------------------------
 // Обновление числовых значений на REC-экране
 //
-// Обновляем только центральную область,
-// чтобы уменьшить мерцание и не перерисовывать весь экран.
+// Обновляем только центральную область — меньше мерцания.
 // ------------------------------------------------------------
 
 void updateRecordingValues(float acc_norm) {
     M5.Display.setTextDatum(top_left);
 
-    // Чистим только область с метриками.
-    M5.Display.fillRect(MAIN_X, 70, 200, 48, MB_BLACK);
+    M5.Display.fillRect(MAIN_X, 70, SCREEN_W - MAIN_X, 48, MB_BLACK);
 
-    // Строка SMP
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("SMP", MAIN_X, 74);
     M5.Display.drawString(String(sample_count), 96, 74);
 
-    // Строка ACC
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("ACC", MAIN_X, 98);
     M5.Display.drawString(String(acc_norm, 2) + " g", 96, 98);
+
+    // Wi-Fi индикатор обновляем вместе с метриками
+    drawWifiIndicator();
 }
 
 
@@ -830,7 +719,7 @@ void drawRecordingScreen(float acc_norm) {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    // REC status
+    // REC + красный кружок
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(MB_RED, MB_BLACK);
     M5.Display.drawString("REC", MAIN_X, 6);
@@ -839,17 +728,44 @@ void drawRecordingScreen(float acc_norm) {
     // Session / record
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-
     String recordText = String(session_id) + " / R" + String(record_id);
     M5.Display.drawString(recordText, MAIN_X, 44);
 
-    // Метрики
+    // Метрики + Wi-Fi индикатор
     updateRecordingValues(acc_norm);
 
-    // Подсказка по кнопке
+    // Подсказка кнопки
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("A STOP", MAIN_X, 122);
+}
+
+
+// ------------------------------------------------------------
+// Экран SAVED
+//
+// Показывается на 1.2 секунды после остановки записи.
+// Даёт пользователю понять, что запись завершена и сохранена.
+// ------------------------------------------------------------
+
+void showSavedScreen(uint32_t saved_record_id, uint32_t saved_sample_count) {
+    M5.Display.fillScreen(MB_BLACK);
+    M5.Display.setTextDatum(top_left);
+
+    drawVerticalLoggerLabel();
+
+    M5.Display.setTextColor(MB_GREEN, MB_BLACK);
+    M5.Display.setTextSize(3);
+    M5.Display.drawString("SAVED", MAIN_X, 16);
+
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
+    M5.Display.drawString("R" + String(saved_record_id), MAIN_X, 60);
+
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.drawString(String(saved_sample_count) + " smp", MAIN_X, 86);
+
+    delay(SAVED_SCREEN_MS);
 }
 
 
@@ -861,10 +777,10 @@ void startRecord() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    is_recording = true;
-    sample_id = 0;
-    sample_count = 0;
-    last_acc_norm = 0.0f;
+    is_recording   = true;
+    sample_id      = 0;
+    sample_count   = 0;
+    last_acc_norm  = 0.0f;
     last_sample_ms = millis();
 
     resetHttpBatchBuffer();
@@ -876,7 +792,6 @@ void startRecord() {
         String(millis());
 
     emitProtocolLine(line);
-
     drawRecordingScreen(last_acc_norm);
 }
 
@@ -898,15 +813,19 @@ void stopRecord() {
 
     emitProtocolLine(line);
 
-    // Перед STOP sendHttpRecordingLine() сбрасывает накопленный DATA batch.
-    // После STOP запись завершена, соединение больше не держим.
     resetRecordingHttpClient();
     resetHttpBatchBuffer();
 
     is_recording = false;
 
-    // Следующая попытка внутри этой же сессии.
+    // Сохраняем для экрана SAVED перед инкрементом record_id
+    last_record_sample_count = sample_count;
+    uint32_t finished_record_id = record_id;
+
     record_id++;
+
+    // Показываем подтверждение перед возвратом на READY
+    showSavedScreen(finished_record_id, last_record_sample_count);
 
     drawIdleScreen();
 }
@@ -914,11 +833,6 @@ void stopRecord() {
 
 // ------------------------------------------------------------
 // Переход к следующей сессии
-//
-// Важно:
-// - если запись идёт, Button B игнорируется;
-// - при переходе к новой сессии record_id снова начинается с 1;
-// - прошивка не знает, в какой experiment попадёт сессия.
 // ------------------------------------------------------------
 
 void nextSession() {
@@ -927,8 +841,8 @@ void nextSession() {
     }
 
     session_number++;
-    record_id = 1;
-    sample_id = 0;
+    record_id    = 1;
+    sample_id    = 0;
     sample_count = 0;
     last_acc_norm = 0.0f;
     waiting_for_second_click = false;
@@ -941,11 +855,8 @@ void nextSession() {
 // ------------------------------------------------------------
 // Обработка Button A
 //
-// Если запись идёт:
-//   одиночный клик A = stop
-//
-// Если запись не идёт:
-//   двойной клик A = start
+// Во время записи:  одиночный клик = STOP
+// В IDLE:           двойной клик   = START
 // ------------------------------------------------------------
 
 void handleButtonA() {
@@ -973,16 +884,13 @@ void handleButtonA() {
         return;
     }
 
-    // Если второй клик пришёл слишком поздно,
-    // считаем его новым первым кликом.
+    // Второй клик пришёл слишком поздно — считаем его новым первым.
     last_click_ms = now;
 }
 
 
 // ------------------------------------------------------------
 // Обработка Button B
-//
-// Button B = перейти к следующей сессии.
 // ------------------------------------------------------------
 
 void handleButtonB() {
@@ -993,7 +901,7 @@ void handleButtonB() {
 
 
 // ------------------------------------------------------------
-// Сброс ожидания второго клика Button A
+// Сброс ожидания второго клика
 // ------------------------------------------------------------
 
 void handleClickTimeout() {
@@ -1001,9 +909,7 @@ void handleClickTimeout() {
         return;
     }
 
-    uint32_t now = millis();
-
-    if (now - last_click_ms > DOUBLE_CLICK_WINDOW_MS) {
+    if (millis() - last_click_ms > DOUBLE_CLICK_WINDOW_MS) {
         waiting_for_second_click = false;
     }
 }
@@ -1011,6 +917,9 @@ void handleClickTimeout() {
 
 // ------------------------------------------------------------
 // Чтение IMU и отправка строки DATA
+//
+// Используем статический буфер data_line_buf вместо String
+// для снижения heap fragmentation при 100 Hz.
 // ------------------------------------------------------------
 
 void sendImuSample() {
@@ -1028,13 +937,11 @@ void sendImuSample() {
         char session_id[8];
         getSessionId(session_id, sizeof(session_id));
 
-        String line =
-            String("EVENT,IMU_NOT_UPDATED,") +
-            session_id + "," +
-            String(record_id) + "," +
-            String(now);
+        snprintf(data_line_buf, sizeof(data_line_buf),
+            "EVENT,IMU_NOT_UPDATED,%s,%lu,%lu",
+            session_id, record_id, now);
 
-        emitProtocolLine(line);
+        emitProtocolLine(String(data_line_buf));
         return;
     }
 
@@ -1043,13 +950,12 @@ void sendImuSample() {
     float ax = data.accel.x;
     float ay = data.accel.y;
     float az = data.accel.z;
-
     float gx = data.gyro.x;
     float gy = data.gyro.y;
     float gz = data.gyro.z;
 
     float acc_norm = sqrt(ax * ax + ay * ay + az * az);
-    last_acc_norm = acc_norm;
+    last_acc_norm  = acc_norm;
 
     sample_id++;
     sample_count++;
@@ -1057,25 +963,19 @@ void sendImuSample() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    String line =
-        String("DATA,") +
-        session_id + "," +
-        String(record_id) + "," +
-        String(sample_id) + "," +
-        String(now) + "," +
-        String(ax, 4) + "," +
-        String(ay, 4) + "," +
-        String(az, 4) + "," +
-        String(gx, 4) + "," +
-        String(gy, 4) + "," +
-        String(gz, 4) + "," +
-        String(acc_norm, 4);
+    snprintf(data_line_buf, sizeof(data_line_buf),
+        "DATA,%s,%lu,%lu,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
+        session_id, record_id, sample_id, now,
+        ax, ay, az, gx, gy, gz, acc_norm);
 
-    emitProtocolLine(line);
+    emitProtocolLine(String(data_line_buf));
 
-    // Экран обновляем не на каждом сэмпле, а примерно 2 раза в секунду.
-    // При sample_count == 1 обновляем сразу, чтобы не висел ноль.
-    if (sample_count == 1 || sample_count % 5 == 0) {
+    // Экран обновляем по времени (~5 раз в секунду), не по счётчику сэмплов.
+    // Это даёт предсказуемое поведение на любой частоте дискретизации.
+    static uint32_t last_screen_update_ms = 0;
+
+    if (sample_count == 1 || now - last_screen_update_ms >= 200) {
+        last_screen_update_ms = now;
         updateRecordingValues(acc_norm);
     }
 }
@@ -1089,10 +989,7 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
 
-    // Фиксируем landscape-ориентацию.
-    // Если экран окажется вверх ногами — заменить 1 на 3.
     M5.Display.setRotation(1);
-
     M5.Display.setBrightness(80);
     M5.Display.setTextFont(1);
     M5.Display.setTextDatum(top_left);
@@ -1104,7 +1001,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    Serial.println("MotionBlocks IMU logger v0.6.2");
+    Serial.println("MotionBlocks IMU logger v0.7.0");
     Serial.println("Protocol:");
     Serial.println("EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms");
     Serial.println("EVENT,SAMPLE_RATE,sample_rate_hz,timestamp_ms");
@@ -1116,22 +1013,11 @@ void setup() {
     Serial.print("HTTP logger URL: ");
     Serial.println(LOGGER_URL);
 
-    // Выбираем частоту дискретизации для текущего запуска устройства.
     selectSampleRateAtStartup();
-
-    // Подключаемся к Wi-Fi.
     connectToWifi();
 
-    // Сообщаем техническую идентичность устройства.
-    // Logger сможет сопоставить MAC address с device_id.
     sendDeviceInfoEvent();
-
-    // Сообщаем выбранную частоту дискретизации.
-    // Logger сможет записать sample_rate_hz в metadata.
     sendSampleRateEvent();
-
-    // Сообщаем стартовую сессию A001.
-    // Теперь строка уйдёт и в Serial, и по HTTP.
     sendNewSessionEvent();
 
     drawIdleScreen();
