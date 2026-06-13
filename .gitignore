@@ -268,3 +268,6 @@ data/db/*
 
 # Local Wi-Fi credentials
 firmware/m5stickc-plus2/src/wifi_config.h
+# Analysis outputs
+data/analysis/*
+!data/analysis/.gitkeep
