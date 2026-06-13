@@ -1,16 +1,14 @@
 """
-MotionBlocks — Motion Browser
+MotionBlocks — Motion Browser v2
 tools/motion_browser.py
 
 Запуск:
     streamlit run tools/motion_browser.py
 
-Назначение:
-    Обзор коллекции записей и просмотр сигналов внутри отдельных сессий.
-
 Режимы:
-    1. Обзор    — таблица экспериментов и сессий, агрегированная статистика
-    2. Просмотр — графики сигналов для выбранной сессии
+    1. Обзор        — таблица экспериментов и сессий
+    2. Просмотр     — графики сигналов для выбранной сессии
+    3. Редактор     — редактирование полей сессии / эксперимента
 """
 
 import json
@@ -24,39 +22,58 @@ import streamlit as st
 # Конфигурация
 # ------------------------------------------------------------
 
-METADATA_DIR   = Path("data/metadata")
-RAW_DIR        = Path("data/raw")
-EXPERIMENTS_PATH      = METADATA_DIR / "experiments.json"
-RECORDING_SESSIONS_PATH = METADATA_DIR / "recording_sessions.json"
+METADATA_DIR            = Path("data/metadata")
+RAW_DIR                 = Path("data/raw")
+EXPERIMENTS_PATH        = METADATA_DIR / "experiments.json"
+SESSIONS_PATH           = METADATA_DIR / "recording_sessions.json"
+SUBJECTS_PATH           = METADATA_DIR / "subjects.json"
+
+STATUS_OPTIONS = ["draft", "raw", "checked", "bad", "archived"]
+
+MOVEMENT_TYPE_OPTIONS = [
+    "unknown", "idle", "walking", "running", "jumping",
+    "shaking", "stairs_up", "stairs_down", "falling_like",
+    "sitting_down", "standing_up", "device_test",
+]
+
+WRIST_OPTIONS = ["left", "right", "unknown"]
+
+SUBJECT_OPTIONS_DEFAULT = ["unknown", "child_01", "child_02", "adult_01", "mentor_01"]
 
 
 # ------------------------------------------------------------
-# Загрузка данных
+# Загрузка / сохранение JSON
 # ------------------------------------------------------------
 
+def load_json_list(path: Path) -> list:
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    return json.loads(text)
+
+
+def save_json_list(path: Path, data: list) -> None:
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 @st.cache_data
-def load_experiments() -> pd.DataFrame:
-    if not EXPERIMENTS_PATH.exists():
-        return pd.DataFrame()
-
-    data = json.loads(EXPERIMENTS_PATH.read_text(encoding="utf-8"))
-    df = pd.DataFrame(data)
-
-    # Оставляем только нужные колонки для отображения
-    cols = ["experiment_id", "short_name", "title", "status",
-            "started_at", "location", "participants", "tags"]
-    cols = [c for c in cols if c in df.columns]
-    return df[cols]
+def load_experiments_cached() -> list:
+    return load_json_list(EXPERIMENTS_PATH)
 
 
 @st.cache_data
-def load_sessions() -> pd.DataFrame:
-    if not RECORDING_SESSIONS_PATH.exists():
-        return pd.DataFrame()
+def load_sessions_cached() -> list:
+    return load_json_list(SESSIONS_PATH)
 
-    data = json.loads(RECORDING_SESSIONS_PATH.read_text(encoding="utf-8"))
-    df = pd.DataFrame(data)
-    return df
+
+@st.cache_data
+def load_subjects_cached() -> list:
+    return load_json_list(SUBJECTS_PATH)
 
 
 @st.cache_data
@@ -67,121 +84,127 @@ def load_csv(file_path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def reload_all():
+    """Сбросить кэш и перечитать все файлы."""
+    st.cache_data.clear()
+
+
 # ------------------------------------------------------------
 # Вспомогательные функции
 # ------------------------------------------------------------
 
-def count_data_rows(file_path: str) -> int:
-    """Посчитать количество DATA строк в CSV файле."""
-    df = load_csv(file_path)
-    if df.empty:
-        return 0
-    if "row_type" in df.columns:
-        return int((df["row_type"] == "DATA").sum())
-    return len(df)
+def status_emoji(status: str) -> str:
+    return {
+        "draft":    "🔴 draft",
+        "raw":      "🟡 raw",
+        "checked":  "🟢 checked",
+        "bad":      "⛔ bad",
+        "archived": "📦 archived",
+    }.get(status, status)
 
 
-def get_file_size_kb(file_path: str) -> str:
-    path = Path(file_path)
-    if not path.exists():
-        return "—"
-    return f"{path.stat().st_size / 1024:.1f} KB"
+def get_subject_ids() -> list[str]:
+    subjects = load_subjects_cached()
+    ids = [s.get("subject_id", "") for s in subjects if s.get("subject_id")]
+    return sorted(ids) if ids else SUBJECT_OPTIONS_DEFAULT
 
 
-def status_badge(status: str) -> str:
-    """Превратить статус в читаемый текст с эмодзи."""
-    if status == "raw":
-        return "🟡 raw"
-    if status == "auto created. needs description.":
-        return "🔴 needs description"
-    if status == "checked":
-        return "🟢 checked"
-    if status == "bad":
-        return "⛔ bad"
-    return status
+def sessions_to_df(sessions: list) -> pd.DataFrame:
+    if not sessions:
+        return pd.DataFrame()
+    return pd.DataFrame(sessions)
+
+
+def experiments_to_df(experiments: list) -> pd.DataFrame:
+    if not experiments:
+        return pd.DataFrame()
+    return pd.DataFrame(experiments)
 
 
 # ------------------------------------------------------------
 # Страница: Обзор коллекции
 # ------------------------------------------------------------
 
-def page_overview(sessions_df: pd.DataFrame, experiments_df: pd.DataFrame):
+def page_overview():
     st.header("Коллекция записей")
 
-    if sessions_df.empty:
+    experiments = load_experiments_cached()
+    sessions    = load_sessions_cached()
+
+    if not sessions:
         st.warning("Файл recording_sessions.json не найден или пустой.")
         return
 
-    # --- Агрегат по экспериментам ---
+    sessions_df    = sessions_to_df(sessions)
+    experiments_df = experiments_to_df(experiments)
+
+    # --- Таблица экспериментов ---
     st.subheader("Эксперименты")
 
     exp_agg = (
         sessions_df.groupby("experiment_id")
         .agg(
             сессий=("session_uid", "count") if "session_uid" in sessions_df.columns
-                   else ("session_id", "count"),
+                   else ("device_session_id", "count"),
             движений=("movement_type", lambda x: x[x != "unknown"].nunique()),
-            частота_гц=("sample_rate_hz", lambda x: ", ".join(
+            гц=("sample_rate_hz", lambda x: ", ".join(
                 sorted(set(str(int(v)) for v in x.dropna()))
             )),
+            draft=("status", lambda x: (x == "draft").sum()),
+            checked=("status", lambda x: (x == "checked").sum()),
         )
         .reset_index()
     )
 
-    # Добавляем short_name из experiments.json если есть
     if not experiments_df.empty and "experiment_id" in experiments_df.columns:
-        exp_agg = exp_agg.merge(
-            experiments_df[["experiment_id", "short_name", "status"]].rename(
-                columns={"status": "статус_эксп"}
-            ),
-            on="experiment_id",
-            how="left",
-        )
+        exp_meta = experiments_df[
+            ["experiment_id", "short_name", "title", "location", "status"]
+        ].rename(columns={"status": "статус"})
+        exp_agg = exp_agg.merge(exp_meta, on="experiment_id", how="left")
 
     st.dataframe(exp_agg, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # --- Фильтры ---
+    # --- Фильтры сессий ---
     st.subheader("Сессии")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         exp_options = ["Все"] + sorted(sessions_df["experiment_id"].unique().tolist())
         selected_exp = st.selectbox("Эксперимент", exp_options)
 
     with col2:
-        movement_options = ["Все"] + sorted(
-            sessions_df["movement_type"].dropna().unique().tolist()
-        )
-        selected_movement = st.selectbox("Тип движения", movement_options)
+        movement_vals = sessions_df["movement_type"].dropna().unique().tolist()
+        movement_options = ["Все"] + sorted(movement_vals)
+        selected_movement = st.selectbox("Движение", movement_options)
 
     with col3:
-        status_options = ["Все"] + sorted(
-            sessions_df["status"].dropna().unique().tolist()
-        )
+        status_vals = sessions_df["status"].dropna().unique().tolist()
+        status_options = ["Все"] + sorted(status_vals)
         selected_status = st.selectbox("Статус", status_options)
+
+    with col4:
+        subject_vals = sessions_df["subject_id"].dropna().unique().tolist() \
+            if "subject_id" in sessions_df.columns else []
+        subject_options = ["Все"] + sorted(subject_vals)
+        selected_subject = st.selectbox("Субъект", subject_options)
 
     # Применяем фильтры
     filtered = sessions_df.copy()
-
-    if selected_exp != "Все":
-        filtered = filtered[filtered["experiment_id"] == selected_exp]
-
-    if selected_movement != "Все":
-        filtered = filtered[filtered["movement_type"] == selected_movement]
-
-    if selected_status != "Все":
-        filtered = filtered[filtered["status"] == selected_status]
+    if selected_exp      != "Все": filtered = filtered[filtered["experiment_id"] == selected_exp]
+    if selected_movement != "Все": filtered = filtered[filtered["movement_type"] == selected_movement]
+    if selected_status   != "Все": filtered = filtered[filtered["status"] == selected_status]
+    if selected_subject  != "Все" and "subject_id" in filtered.columns:
+        filtered = filtered[filtered["subject_id"] == selected_subject]
 
     # Колонки для таблицы
-    display_cols = []
-    for col in ["experiment_id", "session_uid", "device_id", "recording_run_id",
-                "device_session_id", "session_id", "movement_type", "movement_label",
-                "subject_id", "sample_rate_hz", "started_at", "status", "file_name"]:
-        if col in filtered.columns:
-            display_cols.append(col)
+    display_cols = [c for c in [
+        "experiment_id", "session_uid", "device_id", "recording_run_id",
+        "device_session_id", "movement_type", "movement_label",
+        "subject_id", "wrist", "sample_rate_hz", "started_at", "status", "file_name",
+    ] if c in filtered.columns]
 
     st.dataframe(
         filtered[display_cols].reset_index(drop=True),
@@ -191,26 +214,48 @@ def page_overview(sessions_df: pd.DataFrame, experiments_df: pd.DataFrame):
 
     st.caption(f"Показано {len(filtered)} из {len(sessions_df)} сессий")
 
+    # --- Удаление эксперимента ---
+    st.divider()
+    with st.expander("⚠️ Удалить эксперимент"):
+        if experiments:
+            exp_to_delete = st.selectbox(
+                "Выбери эксперимент для удаления",
+                [e["experiment_id"] for e in experiments],
+                key="del_exp_select",
+            )
+            st.warning(
+                f"Удалит запись **{exp_to_delete}** из experiments.json. "
+                "CSV файлы не удаляются."
+            )
+            if st.button("Удалить эксперимент", type="primary", key="del_exp_btn"):
+                new_experiments = [e for e in experiments
+                                   if e["experiment_id"] != exp_to_delete]
+                save_json_list(EXPERIMENTS_PATH, new_experiments)
+                reload_all()
+                st.success(f"Эксперимент {exp_to_delete} удалён.")
+                st.rerun()
+
 
 # ------------------------------------------------------------
 # Страница: Просмотр сессии
 # ------------------------------------------------------------
 
-def page_session_viewer(sessions_df: pd.DataFrame):
+def page_session_viewer():
     st.header("Просмотр сессии")
 
-    if sessions_df.empty:
+    sessions = load_sessions_cached()
+    if not sessions:
         st.warning("Нет данных.")
         return
 
-    # Выбор сессии
-    # Строим читаемый лейбл для selectbox
+    sessions_df = sessions_to_df(sessions)
+
     def session_label(row) -> str:
-        uid = row.get("session_uid") or row.get("session_id", "?")
+        uid      = row.get("session_uid") or row.get("device_session_id", "?")
         movement = row.get("movement_type", "?")
-        rate = row.get("sample_rate_hz", "?")
-        fname = row.get("file_name", "?")
-        return f"{uid}  |  {movement}  |  {rate}Hz  |  {fname}"
+        rate     = row.get("sample_rate_hz", "?")
+        status   = row.get("status", "?")
+        return f"{uid}  |  {movement}  |  {rate}Hz  |  {status_emoji(status)}"
 
     labels = sessions_df.apply(session_label, axis=1).tolist()
     selected_label = st.selectbox("Выбери сессию", labels)
@@ -218,232 +263,306 @@ def page_session_viewer(sessions_df: pd.DataFrame):
     if not selected_label:
         return
 
-    selected_idx = labels.index(selected_label)
-    session = sessions_df.iloc[selected_idx]
+    idx     = labels.index(selected_label)
+    session = sessions_df.iloc[idx].to_dict()
 
-    # --- Карточка сессии ---
+    # --- Карточка ---
     st.subheader("Информация о сессии")
 
-    info_cols = st.columns(3)
-
-    with info_cols[0]:
-        st.metric("Эксперимент", session.get("experiment_id", "—"))
-        st.metric("Устройство", session.get("device_id", "—"))
-        st.metric("Частота", f"{session.get('sample_rate_hz', '—')} Hz")
-
-    with info_cols[1]:
-        st.metric("Движение", session.get("movement_type", "—"))
-        st.metric("Субъект", session.get("subject_id", "—"))
-        st.metric("Статус", session.get("status", "—"))
-
-    with info_cols[2]:
-        st.metric("Файл", session.get("file_name", "—"))
-        if "recording_run_id" in session:
-            st.metric("Run ID", session.get("recording_run_id", "—"))
-        st.metric("Дата", str(session.get("started_at", "—"))[:10])
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Эксперимент",  session.get("experiment_id", "—"))
+        st.metric("Устройство",   session.get("device_id", "—"))
+        st.metric("Частота",      f"{session.get('sample_rate_hz', '—')} Hz")
+    with c2:
+        st.metric("Движение",     session.get("movement_type", "—"))
+        st.metric("Субъект",      session.get("subject_id", "—"))
+        st.metric("Запястье",     session.get("wrist", "—"))
+    with c3:
+        st.metric("Статус",       status_emoji(session.get("status", "—")))
+        st.metric("Run ID",       session.get("recording_run_id", "—"))
+        st.metric("Файл",         session.get("file_name", "—"))
 
     if session.get("comment"):
-        st.info(f"Комментарий: {session['comment']}")
+        st.info(f"💬 {session['comment']}")
 
     st.divider()
 
-    # --- Загрузка CSV ---
+    # --- CSV ---
     file_path = session.get("file_path", "")
-
     if not file_path:
         st.warning("Путь к файлу не указан в metadata.")
         return
 
     df = load_csv(file_path)
-
     if df.empty:
         st.error(f"Файл не найден или пустой: `{file_path}`")
         return
 
-    # Разделяем EVENT и DATA строки
     if "row_type" in df.columns:
-        data_df   = df[df["row_type"] == "DATA"].copy()
-        events_df = df[df["row_type"] == "EVENT"].copy()
+        data_df = df[df["row_type"] == "DATA"].copy()
     else:
-        data_df   = df.copy()
-        events_df = pd.DataFrame()
+        data_df = df.copy()
 
     if data_df.empty:
         st.warning("В файле нет DATA строк.")
         return
 
-    # Числовые колонки
     for col in ["device_timestamp_ms", "ax", "ay", "az", "gx", "gy", "gz", "acc_norm"]:
         if col in data_df.columns:
             data_df[col] = pd.to_numeric(data_df[col], errors="coerce")
 
-    # Базовая статистика
-    st.subheader("Статистика записи")
+    # --- Статистика ---
+    st.subheader("Статистика")
 
-    stat_cols = st.columns(4)
+    s1, s2, s3, s4 = st.columns(4)
 
-    total_samples = len(data_df)
-    records = data_df["record_id"].nunique() if "record_id" in data_df.columns else "—"
-
-    with stat_cols[0]:
-        st.metric("Сэмплов", total_samples)
-
-    with stat_cols[1]:
-        st.metric("Записей (record_id)", records)
-
-    with stat_cols[2]:
+    with s1:
+        st.metric("Сэмплов", len(data_df))
+    with s2:
+        records = data_df["record_id"].nunique() if "record_id" in data_df.columns else "—"
+        st.metric("Записей", records)
+    with s3:
         if "device_timestamp_ms" in data_df.columns:
             t = data_df["device_timestamp_ms"].dropna()
             if len(t) > 1:
-                duration = (t.max() - t.min()) / 1000
-                st.metric("Длительность", f"{duration:.1f} s")
+                st.metric("Длительность", f"{(t.max()-t.min())/1000:.1f} s")
         else:
             st.metric("Длительность", "—")
-
-    with stat_cols[3]:
+    with s4:
         if "device_timestamp_ms" in data_df.columns:
             t = data_df["device_timestamp_ms"].dropna().sort_values()
             if len(t) > 1:
-                dt = t.diff().dropna()
-                effective_hz = 1000 / dt.mean()
-                st.metric("Эффективная частота", f"{effective_hz:.1f} Hz")
+                st.metric("Эфф. частота", f"{1000/t.diff().dropna().mean():.1f} Hz")
         else:
-            st.metric("Эффективная частота", "—")
+            st.metric("Эфф. частота", "—")
 
     st.divider()
 
     # --- Графики ---
     st.subheader("Графики")
 
-    # Выбор что показывать
     chart_options = st.multiselect(
-        "Показать графики",
+        "Показать",
         options=["acc_norm", "ax / ay / az", "gx / gy / gz", "dt_ms"],
         default=["acc_norm", "ax / ay / az"],
     )
 
-    # Разбивка по record_id
     show_records = st.checkbox("Разделять по record_id", value=True)
 
     if "device_timestamp_ms" in data_df.columns:
-        x_col = "device_timestamp_ms"
-        x_label = "Время (ms)"
-        # Нормируем время от нуля для каждой записи если нужно
         if show_records and "record_id" in data_df.columns:
-            data_df = data_df.copy()
             data_df["t_rel_ms"] = data_df.groupby("record_id")["device_timestamp_ms"].transform(
                 lambda x: x - x.min()
             )
-            x_col = "t_rel_ms"
-            x_label = "Время от начала записи (ms)"
+            x_col, x_label = "t_rel_ms", "Время от начала записи (ms)"
+        else:
+            x_col, x_label = "device_timestamp_ms", "Время (ms)"
     else:
         data_df["_idx"] = range(len(data_df))
-        x_col = "_idx"
-        x_label = "Индекс сэмпла"
+        x_col, x_label = "_idx", "Индекс сэмпла"
 
-    record_ids = sorted(data_df["record_id"].unique()) if "record_id" in data_df.columns else [None]
+    record_ids = sorted(data_df["record_id"].unique()) \
+        if "record_id" in data_df.columns else [None]
 
-    for chart_name in chart_options:
+    for chart in chart_options:
 
-        if chart_name == "acc_norm" and "acc_norm" in data_df.columns:
+        if chart == "acc_norm" and "acc_norm" in data_df.columns:
             fig, ax = plt.subplots(figsize=(12, 3))
-            ax.set_title("acc_norm (норма ускорения)")
-            ax.set_xlabel(x_label)
-            ax.set_ylabel("g")
-            ax.axhline(1.0, color="grey", linewidth=0.8, linestyle="--", label="1g (покой)")
-
+            ax.set_title("acc_norm")
+            ax.set_xlabel(x_label); ax.set_ylabel("g")
+            ax.axhline(1.0, color="grey", lw=0.8, ls="--", label="1g")
             if show_records and "record_id" in data_df.columns:
                 for rid in record_ids:
                     sub = data_df[data_df["record_id"] == rid]
-                    ax.plot(sub[x_col], sub["acc_norm"], linewidth=0.8, label=f"R{rid}")
+                    ax.plot(sub[x_col], sub["acc_norm"], lw=0.8, label=f"R{rid}")
                 ax.legend(fontsize=7)
             else:
-                ax.plot(data_df[x_col], data_df["acc_norm"], linewidth=0.8, color="steelblue")
+                ax.plot(data_df[x_col], data_df["acc_norm"], lw=0.8, color="steelblue")
+            plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-
-        if chart_name == "ax / ay / az":
-            available = [c for c in ["ax", "ay", "az"] if c in data_df.columns]
-            if available:
+        if chart == "ax / ay / az":
+            avail = [c for c in ["ax", "ay", "az"] if c in data_df.columns]
+            if avail:
                 fig, ax = plt.subplots(figsize=(12, 3))
-                ax.set_title("Акселерометр (ax / ay / az)")
-                ax.set_xlabel(x_label)
-                ax.set_ylabel("g")
+                ax.set_title("Акселерометр"); ax.set_xlabel(x_label); ax.set_ylabel("g")
                 colors = {"ax": "tomato", "ay": "steelblue", "az": "seagreen"}
-
                 if show_records and "record_id" in data_df.columns:
                     for rid in record_ids:
                         sub = data_df[data_df["record_id"] == rid]
-                        for ch in available:
-                            ax.plot(sub[x_col], sub[ch], linewidth=0.8,
-                                    color=colors.get(ch), alpha=0.8,
-                                    label=f"{ch}/R{rid}" if rid == record_ids[0] else "")
+                        for ch in avail:
+                            ax.plot(sub[x_col], sub[ch], lw=0.8,
+                                    color=colors[ch], alpha=0.8,
+                                    label=ch if rid == record_ids[0] else "")
                 else:
-                    for ch in available:
-                        ax.plot(data_df[x_col], data_df[ch], linewidth=0.8,
-                                color=colors.get(ch), label=ch)
+                    for ch in avail:
+                        ax.plot(data_df[x_col], data_df[ch], lw=0.8,
+                                color=colors[ch], label=ch)
+                ax.legend(fontsize=7); plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
-                ax.legend(fontsize=7)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-
-        if chart_name == "gx / gy / gz":
-            available = [c for c in ["gx", "gy", "gz"] if c in data_df.columns]
-            if available:
+        if chart == "gx / gy / gz":
+            avail = [c for c in ["gx", "gy", "gz"] if c in data_df.columns]
+            if avail:
                 fig, ax = plt.subplots(figsize=(12, 3))
-                ax.set_title("Гироскоп (gx / gy / gz)")
-                ax.set_xlabel(x_label)
-                ax.set_ylabel("deg/s")
+                ax.set_title("Гироскоп"); ax.set_xlabel(x_label); ax.set_ylabel("deg/s")
                 colors = {"gx": "tomato", "gy": "steelblue", "gz": "seagreen"}
-
                 if show_records and "record_id" in data_df.columns:
                     for rid in record_ids:
                         sub = data_df[data_df["record_id"] == rid]
-                        for ch in available:
-                            ax.plot(sub[x_col], sub[ch], linewidth=0.8,
-                                    color=colors.get(ch), alpha=0.8)
+                        for ch in avail:
+                            ax.plot(sub[x_col], sub[ch], lw=0.8, color=colors[ch], alpha=0.8)
                 else:
-                    for ch in available:
-                        ax.plot(data_df[x_col], data_df[ch], linewidth=0.8,
-                                color=colors.get(ch), label=ch)
+                    for ch in avail:
+                        ax.plot(data_df[x_col], data_df[ch], lw=0.8,
+                                color=colors[ch], label=ch)
+                ax.legend(fontsize=7); plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
-                ax.legend(fontsize=7)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-
-        if chart_name == "dt_ms" and "device_timestamp_ms" in data_df.columns:
+        if chart == "dt_ms" and "device_timestamp_ms" in data_df.columns:
             fig, ax = plt.subplots(figsize=(12, 3))
-            ax.set_title("dt_ms (интервал между сэмплами)")
-            ax.set_xlabel("Индекс сэмпла")
-            ax.set_ylabel("ms")
-
-            configured_hz = session.get("sample_rate_hz")
-            if configured_hz:
-                expected_dt = 1000 / configured_hz
-                ax.axhline(expected_dt, color="grey", linewidth=0.8,
-                           linestyle="--", label=f"ожидаемый {expected_dt:.0f}ms")
-
+            ax.set_title("dt_ms"); ax.set_xlabel("Индекс сэмпла"); ax.set_ylabel("ms")
+            hz = session.get("sample_rate_hz")
+            if hz:
+                ax.axhline(1000/hz, color="grey", lw=0.8, ls="--",
+                           label=f"ожидаемый {1000/hz:.0f}ms")
             if show_records and "record_id" in data_df.columns:
                 for rid in record_ids:
                     sub = data_df[data_df["record_id"] == rid].copy()
                     sub["dt"] = sub["device_timestamp_ms"].diff()
-                    ax.plot(sub["dt"].values, linewidth=0.8, label=f"R{rid}")
+                    ax.plot(sub["dt"].values, lw=0.8, label=f"R{rid}")
                 ax.legend(fontsize=7)
             else:
-                dt = data_df["device_timestamp_ms"].diff()
-                ax.plot(dt.values, linewidth=0.8, color="steelblue")
+                ax.plot(data_df["device_timestamp_ms"].diff().values, lw=0.8, color="steelblue")
+            plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-
-    # --- Сырые данные ---
     with st.expander("Сырые данные (первые 100 строк)"):
         st.dataframe(df.head(100), use_container_width=True)
+
+
+# ------------------------------------------------------------
+# Страница: Редактор
+# ------------------------------------------------------------
+
+def page_editor():
+    st.header("Редактор метаданных")
+
+    sessions = load_json_list(SESSIONS_PATH)
+    if not sessions:
+        st.warning("Нет данных.")
+        return
+
+    subject_ids = get_subject_ids()
+
+    # --- Выбор сессии ---
+    def session_label(s: dict) -> str:
+        uid      = s.get("session_uid") or s.get("device_session_id", "?")
+        movement = s.get("movement_type", "?")
+        status   = s.get("status", "?")
+        return f"{uid}  |  {movement}  |  {status_emoji(status)}"
+
+    labels = [session_label(s) for s in sessions]
+    selected_label = st.selectbox("Выбери сессию для редактирования", labels)
+    idx = labels.index(selected_label)
+    session = sessions[idx]
+
+    st.divider()
+
+    st.subheader("Редактировать поля")
+    st.caption(f"session_uid: `{session.get('session_uid', '?')}`  |  файл: `{session.get('file_name', '?')}`")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # movement_type
+        mt_current = session.get("movement_type", "unknown")
+        mt_options = MOVEMENT_TYPE_OPTIONS.copy()
+        if mt_current not in mt_options:
+            mt_options.insert(0, mt_current)
+        new_movement_type = st.selectbox(
+            "movement_type",
+            mt_options,
+            index=mt_options.index(mt_current),
+        )
+
+        # movement_label
+        new_movement_label = st.text_input(
+            "movement_label",
+            value=session.get("movement_label", "unknown"),
+        )
+
+        # subject_id
+        subj_current = session.get("subject_id", "unknown")
+        subj_options = subject_ids.copy()
+        if subj_current not in subj_options:
+            subj_options.insert(0, subj_current)
+        new_subject_id = st.selectbox(
+            "subject_id",
+            subj_options,
+            index=subj_options.index(subj_current),
+        )
+
+        # wrist
+        wrist_current = session.get("wrist") or "unknown"
+        new_wrist = st.selectbox(
+            "wrist",
+            WRIST_OPTIONS,
+            index=WRIST_OPTIONS.index(wrist_current) if wrist_current in WRIST_OPTIONS else 2,
+        )
+
+    with col2:
+        # status
+        status_current = session.get("status", "draft")
+        new_status = st.selectbox(
+            "status",
+            STATUS_OPTIONS,
+            index=STATUS_OPTIONS.index(status_current) if status_current in STATUS_OPTIONS else 0,
+        )
+
+        # records_actual
+        new_records_actual = st.number_input(
+            "records_actual",
+            min_value=0,
+            value=int(session["records_actual"]) if session.get("records_actual") is not None else 0,
+            step=1,
+        )
+
+        # comment
+        new_comment = st.text_area(
+            "comment",
+            value=session.get("comment", ""),
+            height=120,
+        )
+
+    st.divider()
+
+    col_save, col_delete = st.columns([3, 1])
+
+    with col_save:
+        if st.button("💾 Сохранить", type="primary"):
+            sessions[idx] = {
+                **session,
+                "movement_type":   new_movement_type,
+                "movement_label":  new_movement_label,
+                "subject_id":      new_subject_id,
+                "wrist":           new_wrist,
+                "status":          new_status,
+                "records_actual":  new_records_actual if new_records_actual > 0 else None,
+                "comment":         new_comment,
+            }
+            save_json_list(SESSIONS_PATH, sessions)
+            reload_all()
+            st.success("Сохранено.")
+            st.rerun()
+
+    with col_delete:
+        with st.expander("⚠️ Удалить сессию"):
+            st.warning("Удалит запись из JSON. CSV файл не удаляется.")
+            if st.button("Удалить", type="primary", key="del_session_btn"):
+                uid = session.get("session_uid", "?")
+                sessions.pop(idx)
+                save_json_list(SESSIONS_PATH, sessions)
+                reload_all()
+                st.success(f"Сессия {uid} удалена.")
+                st.rerun()
 
 
 # ------------------------------------------------------------
@@ -460,25 +579,35 @@ def main():
     st.title("📊 MotionBlocks Browser")
     st.caption("Stofendez Lab")
 
-    # Загружаем данные
-    experiments_df = load_experiments()
-    sessions_df    = load_sessions()
+    sessions    = load_sessions_cached()
+    experiments = load_experiments_cached()
 
-    # Навигация
     page = st.sidebar.radio(
         "Режим",
-        ["🗂 Обзор коллекции", "📈 Просмотр сессии"],
+        ["🗂 Обзор", "📈 Просмотр", "✏️ Редактор"],
     )
 
     st.sidebar.divider()
-    st.sidebar.caption(f"Экспериментов: {len(experiments_df)}")
-    st.sidebar.caption(f"Сессий: {len(sessions_df)}")
-    st.sidebar.caption(f"Данные: {RAW_DIR}")
+    st.sidebar.caption(f"Экспериментов: {len(experiments)}")
+    st.sidebar.caption(f"Сессий: {len(sessions)}")
 
-    if page == "🗂 Обзор коллекции":
-        page_overview(sessions_df, experiments_df)
+    if sessions:
+        df = sessions_to_df(sessions)
+        draft_count = (df["status"] == "draft").sum() if "status" in df.columns else 0
+        if draft_count > 0:
+            st.sidebar.warning(f"{draft_count} сессий ждут описания")
+
+    st.sidebar.divider()
+    if st.sidebar.button("🔄 Обновить данные"):
+        reload_all()
+        st.rerun()
+
+    if page == "🗂 Обзор":
+        page_overview()
+    elif page == "📈 Просмотр":
+        page_session_viewer()
     else:
-        page_session_viewer(sessions_df)
+        page_editor()
 
 
 if __name__ == "__main__":
