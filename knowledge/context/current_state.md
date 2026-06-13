@@ -2,13 +2,13 @@
 
 ## Date
 
-2026-06-10
+2026-06-13
 
 ## Current project phase
 
-Stage 4 — Wireless HTTP logging and first wearable data collection.
+Stage 4 — Wireless HTTP batch logging and preparation for safe data collection.
 
-The project has moved beyond initial device bring-up, wired Serial logging, and display cleanup.
+The project has moved beyond initial device bring-up, wired Serial logging, display cleanup, basic Wi-Fi HTTP logging, device identity reporting, and selectable sampling-rate testing.
 
 The current working pipeline is:
 
@@ -16,18 +16,27 @@ The current working pipeline is:
 M5StickC Plus2
   → Wi-Fi
   → HTTP POST /line
+  → one-line service events + batched DATA during recording
   → tools/http_logger.py
-  → session CSV files
+  → raw CSV files
   → draft metadata
 ```
 
-The previous USB Serial pipeline still exists and remains useful for debugging, but the main practical path for real movement experiments is now wireless HTTP logging.
+The previous USB Serial pipeline still exists and remains useful for debugging and fallback.
 
 Current immediate goal:
 
 ```text
-collect the first real mini-dataset in wireless mode
+implement recording_run_id and safe file names
 ```
+
+Reason:
+
+```text
+device-local session_id such as A001 can repeat after device reset
+```
+
+Therefore raw files and metadata need an additional logger-side run identifier before larger datasets are collected.
 
 ---
 
@@ -37,7 +46,7 @@ collect the first real mini-dataset in wireless mode
 * Project: **MotionBlocks**
 * Future technology layer: **MotionLink**
 
-MotionBlocks is an educational and technical project for collecting, labeling, and analyzing human motion data from wearable sensors.
+MotionBlocks is an educational and technical project for collecting, labeling, analyzing, and later classifying human motion data from wearable sensors.
 
 The current hardware target is:
 
@@ -52,26 +61,33 @@ M5StickC Plus2
 Current working firmware:
 
 ```text
-IMU logger v0.4 — Wi-Fi HTTP session-aware button-controlled logger
+motionblocks.logger.v0.6.2 — selectable sampling rate + HTTP batch recording logger
 ```
 
-Current working branch:
+Current active branch:
 
 ```text
-feature/wifi-http-logger
+feature/recording-runs-and-safe-file-names
 ```
+
+The next branch changes are expected to be in the Python logger / data layer, not in firmware.
 
 Current firmware capabilities:
 
 * reads IMU data from M5StickC Plus2;
 * calculates `acc_norm`;
 * supports button-controlled recording;
-* manages sessions and records;
+* manages device-local sessions and records;
+* reports technical device identity through `EVENT,DEVICE_INFO`;
+* supports sampling-rate selection at startup;
+* reports selected rate through `EVENT,SAMPLE_RATE`;
 * sends the same protocol lines through Serial and HTTP;
 * connects to Wi-Fi using local `wifi_config.h`;
-* sends protocol lines to Python HTTP logger using `HTTPClient`;
+* uses HTTP batch mode for `DATA` rows during recording;
+* keeps Serial output immediate for debugging;
 * shows a startup splash screen;
 * shows Wi-Fi status / IP address on the READY screen;
+* shows selected sample rate on the READY screen;
 * shows current record metrics on the REC screen.
 
 Confirmed behavior:
@@ -82,7 +98,7 @@ Confirmed behavior:
 * Button B switches to the next session.
 * `record_id` resets to `1` when session changes.
 * `sample_id` increments inside each record.
-* IMU data is sent only while recording.
+* IMU data is sampled only while recording.
 * `acc_norm` is calculated as:
 
 ```text
@@ -90,19 +106,29 @@ sqrt(ax*ax + ay*ay + az*az)
 ```
 
 * In rest position, `acc_norm` should be close to `1.0 g`.
-* Firmware does not know `experiment_id`, `device_id`, `subject_id`, `movement_type`, or `movement_label`.
+* Firmware does not know `experiment_id`, project-level `device_id`, `subject_id`, `movement_type`, or `movement_label`.
+
+Known firmware / transport limits:
+
+* `session_id` is device-local and can repeat after device reset.
+* `sample_rate_hz` means configured / selected rate, not verified effective rate.
+* Effective sampling rate must be calculated later from `DATA.device_timestamp_ms`.
+* Long recording stability and battery life are not yet measured.
 
 ---
 
 ## Firmware responsibility
 
-The firmware manages only device-local recording state:
+The firmware manages only device-local and technical state:
 
 ```text
 session_id
 record_id
 sample_id
 sensor data
+technical device identity
+firmware version
+configured sample rate
 ```
 
 The firmware does **not** manage experiment-level or dataset-level context.
@@ -111,7 +137,8 @@ The following are assigned outside the firmware:
 
 ```text
 experiment_id
-device_id
+project-level device_id
+recording_run_id
 subject_id
 movement_type
 movement_label
@@ -128,6 +155,8 @@ This keeps the device generic and reusable across experiments.
 The firmware sends the same protocol through both Serial and HTTP:
 
 ```csv
+EVENT,DEVICE_INFO,mac_address,firmware_version,timestamp_ms
+EVENT,SAMPLE_RATE,sample_rate_hz,timestamp_ms
 EVENT,NEW_SESSION,session_id,timestamp_ms
 EVENT,START,session_id,record_id,timestamp_ms
 DATA,session_id,record_id,sample_id,timestamp_ms,ax,ay,az,gx,gy,gz,acc_norm
@@ -137,19 +166,22 @@ EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
 Example:
 
 ```csv
-EVENT,NEW_SESSION,A001,12345
+EVENT,DEVICE_INFO,F0:24:F9:97:ED:08,motionblocks.logger.v0.6.2,6972
+EVENT,SAMPLE_RATE,100,7200
+EVENT,NEW_SESSION,A001,7425
 EVENT,START,A001,1,13000
 DATA,A001,1,1,13100,0.0123,-0.0341,0.9872,0.1200,-0.0300,0.0100,0.9880
-DATA,A001,1,2,13200,0.0130,-0.0338,0.9869,0.1100,-0.0400,0.0200,0.9878
-EVENT,STOP,A001,1,19000,60
-EVENT,NEW_SESSION,A002,22000
+DATA,A001,1,2,13110,0.0130,-0.0338,0.9869,0.1100,-0.0400,0.0200,0.9878
+EVENT,STOP,A001,1,19000,600
 ```
 
 Current design decision:
 
 ```text
 The protocol format remains stable.
-Only the transport changes: Serial and/or HTTP.
+Transport may change.
+HTTP batch mode does not change the protocol.
+It only changes how multiple DATA lines are transported.
 ```
 
 ---
@@ -168,6 +200,8 @@ Status:
 working / useful for debugging
 ```
 
+Serial output remains immediate line-by-line.
+
 ### Wireless working path
 
 ```text
@@ -184,6 +218,41 @@ Status:
 working
 ```
 
+Current HTTP behavior:
+
+```text
+IDLE:
+  DEVICE_INFO  → one-shot HTTP POST
+  SAMPLE_RATE  → one-shot HTTP POST
+  NEW_SESSION  → one-shot HTTP POST
+
+RECORDING:
+  START → immediate HTTP POST through recording client
+  DATA  → buffered and sent in batches
+  STOP  → flush DATA batch first, then send STOP
+```
+
+Current batch parameters:
+
+```cpp
+HTTP_BATCH_MAX_LINES = 25
+HTTP_BATCH_MAX_AGE_MS = 500
+```
+
+Confirmed transport result:
+
+```text
+100 Hz works in the current HTTP batch test
+```
+
+Earlier findings:
+
+```text
+per-sample HTTP POST was insufficient for 25 / 50 Hz
+HTTP keep-alive per sample did not solve the problem
+HTTP batch mode solved the current transport bottleneck
+```
+
 The Python HTTP logger is launched from repository root:
 
 ```powershell
@@ -197,6 +266,20 @@ GET  /health
 POST /line
 ```
 
+`POST /line` may contain either:
+
+```text
+one protocol line
+```
+
+or:
+
+```text
+newline-separated batch of protocol lines
+```
+
+The logger treats both forms the same by splitting the HTTP body into lines.
+
 Current local network note:
 
 ```text
@@ -204,16 +287,13 @@ For iPad / M5StickC to reach the Python HTTP logger,
 Windows network profile must be Private, not Public.
 ```
 
-During the first successful test, the notebook Wi-Fi IP was:
+If HTTP fails with `code=-1`, check:
 
 ```text
-192.168.8.129
-```
-
-The corresponding firmware logger endpoint was:
-
-```cpp
-#define LOGGER_URL "http://192.168.8.129:8080/line"
+http_logger.py is running
+LOGGER_URL IP is correct
+Windows network profile is Private
+firewall allows Python on Private networks
 ```
 
 ---
@@ -249,11 +329,19 @@ wifi_config.example.h → committed
 wifi_config.h         → local only / ignored by Git
 ```
 
+Example logger endpoint:
+
+```cpp
+#define LOGGER_URL "http://192.168.8.129:8080/line"
+```
+
+The actual IP depends on the notebook Wi-Fi address.
+
 ---
 
 ## Device display status
 
-The display was cleaned up and now behaves like a small logger instrument panel.
+The display behaves like a small logger instrument panel.
 
 Startup splash screen:
 
@@ -263,12 +351,30 @@ LOGGER
 Stofendez Lab
 ```
 
+Sampling-rate selection screen:
+
+```text
+SAMPLE RATE
+5 / 10 / 25 / 50 / 100 Hz
+A NEXT
+B OK
+```
+
+Selection behavior:
+
+```text
+If no button is pressed, 10 Hz is selected after timeout.
+If Button A is pressed at least once, timeout is disabled.
+Button B confirms selection.
+```
+
 READY screen:
 
 ```text
 WiFi <device_ip>
 READY
 SESSION A001
+RATE <sample_rate>Hz
 A x2 START     B NEXT
 ```
 
@@ -296,7 +402,7 @@ Further visual polishing is not a priority now.
 
 Use simple raw CSV files for sensor data and readable JSON files for metadata.
 
-Current raw data path convention:
+Current raw data path convention is still:
 
 ```text
 data/raw/[experiment_id]/[device_id]/session_[session_id].csv
@@ -306,11 +412,37 @@ Example:
 
 ```text
 data/raw/EXP01/m5_001/session_A001.csv
-data/raw/EXP01/m5_001/session_A002.csv
-data/raw/EXP01/m5_002/session_A001.csv
 ```
 
-The experiment is defined by the folder and metadata, not by the firmware.
+Current limitation:
+
+```text
+session_[session_id].csv is not safe across device resets
+```
+
+Reason:
+
+```text
+M5StickC can restart from session A001
+```
+
+Immediate planned replacement:
+
+```text
+data/raw/[experiment_id]/[device_id]/run_[recording_run_id]_session_[device_session_id]_[sample_rate_hz]Hz.csv
+```
+
+Example target form:
+
+```text
+data/raw/EXP01/m5_001/run_0001_session_A001_100Hz.csv
+```
+
+The exact target convention will be finalized in:
+
+```text
+feature/recording-runs-and-safe-file-names
+```
 
 Generated data is local and normally ignored by Git.
 
@@ -323,6 +455,7 @@ Use readable JSON files for manual editing:
 ```text
 data/metadata/experiments.json
 data/metadata/recording_sessions.json
+data/metadata/devices.json
 ```
 
 Both loggers can create draft metadata records:
@@ -350,7 +483,29 @@ Important rule:
 Existing metadata records are preserved and not overwritten.
 ```
 
-JSONL may be introduced later for append-only automated logging, but for now readable JSON is preferred.
+### Device identifiers
+
+The device reports technical identity:
+
+```text
+mac_address
+firmware_version
+```
+
+The logger resolves or validates project-level `device_id` through:
+
+```text
+data/metadata/devices.json
+```
+
+Current rule:
+
+```text
+firmware reports MAC address
+logger maps mac_address → device_id
+```
+
+If `--device-id` is provided, it remains an explicit override.
 
 ### Experiment identifiers
 
@@ -371,19 +526,9 @@ goal
 comments
 ```
 
-Example:
+### Session and run identifiers
 
-```json
-{
-  "experiment_id": "EXP01",
-  "short_name": "ordinary_home_movements",
-  "title": "Замеры ординарных движений дома"
-}
-```
-
-### Session identifiers
-
-Use short session ids inside each device/experiment context:
+Current firmware session ids are device-local:
 
 ```text
 A001
@@ -391,27 +536,38 @@ A002
 A003
 ```
 
-Use globally unique session uid in metadata:
+Current limitation:
 
 ```text
-session_uid = EXP01_m5_001_A001
+session_uid = [experiment_id]_[device_id]_[session_id]
 ```
 
-Example session metadata:
+is not safe if the same device resets and emits `A001` again in the same experiment.
+
+Next data-layer change:
+
+```text
+recording_run_id
+device_session_id
+safe file names
+```
+
+Current target metadata direction:
 
 ```json
 {
   "experiment_id": "EXP01",
   "device_id": "m5_001",
+  "recording_run_id": "run_0001",
+  "device_session_id": "A001",
   "session_id": "A001",
-  "session_uid": "EXP01_m5_001_A001",
-  "file_name": "session_A001.csv",
-  "file_path": "data/raw/EXP01/m5_001/session_A001.csv",
-  "subject_id": "child_01",
-  "movement_type": "jumping",
-  "movement_label": "jumps_basic"
+  "sample_rate_hz": 100,
+  "file_name": "run_0001_session_A001_100Hz.csv",
+  "file_path": "data/raw/EXP01/m5_001/run_0001_session_A001_100Hz.csv"
 }
 ```
+
+`session_id` may be kept for backward compatibility while `device_session_id` makes the meaning explicit.
 
 ---
 
@@ -437,7 +593,15 @@ EVENT,A001,1,,19000,,,,,,,,STOP,60
 
 Wide CSV is chosen because it is easy to inspect, plot, and explain to children.
 
-Future FDAM / database layers may transform it into a normalized fact model.
+The CSV schema is unchanged by HTTP batch mode.
+
+Future analysis will calculate quality metrics from timestamps, especially:
+
+```text
+effective_sample_rate_hz
+dt_ms statistics
+gap count
+```
 
 ---
 
@@ -476,29 +640,50 @@ Each recording session metadata row should describe available channels.
 
 ## Current sampling decision
 
-Default sampling rate for the current educational prototype:
+Sampling rate is selectable at device startup.
+
+Supported rates:
+
+```text
+5 Hz
+10 Hz
+25 Hz
+50 Hz
+100 Hz
+```
+
+Default:
 
 ```text
 10 Hz
 ```
 
-Rationale:
-
-* simple to debug;
-* small CSV files;
-* enough for first motion experiments;
-* stable enough for initial HTTP logging;
-* good for idle, walking, slow movements, basic jumps.
-
-Future target rates:
+Default selection rule:
 
 ```text
-25 Hz   — normal motion classification
-50 Hz   — fall-like events and sharper movements
-100 Hz  — research / stress-test mode
+If the user does not press Button A, 10 Hz is selected after timeout.
+If the user presses Button A at least once, timeout is disabled and the device waits for Button B.
 ```
 
-Adaptive high-rate event-triggered sampling is a future idea, not a current priority.
+Current interpretation:
+
+```text
+sample_rate_hz = configured / selected sampling rate
+```
+
+Effective sampling rate must be calculated from raw timestamps:
+
+```text
+effective_sample_rate_hz = measured from DATA.device_timestamp_ms
+```
+
+Current transport status:
+
+```text
+HTTP batch mode supports 100 Hz in the current test.
+```
+
+Future analysis should verify effective sampling rate for each recording.
 
 ---
 
@@ -511,8 +696,10 @@ Adaptive high-rate event-triggered sampling is a future idea, not a current prio
 * Use private GitHub repository at the start.
 * Use raw CSV files for first data collection.
 * Use readable JSON files for metadata.
-* Use Wi-Fi HTTP as the first wireless transport.
+* Use Wi-Fi HTTP batch mode as the current wireless transport.
 * Keep USB Serial available for debugging.
+* Keep firmware simple and experiment-agnostic.
+* Keep loggers responsible for experiment context and file paths.
 * Use SQLite later, after first real data files are collected.
 * Do not store real names of children in repository data or metadata.
 * Use aliases such as:
@@ -523,101 +710,6 @@ child_02
 adult_01
 mentor_01
 ```
-
----
-
-## FDAM compatibility
-
-Current structure is intentionally simple, but should remain compatible with a future FDAM motion domain.
-
-Current practical model:
-
-```text
-Experiment
-  → RecordingSession
-      → DataFile
-      → MotionRecord
-          → MotionSample
-              → Sensor values / channels
-```
-
-Future FDAM mapping:
-
-```text
-experiments.json
-  → Experiment
-
-recording_sessions.json
-  → RecordingSession
-  → DataFile
-  → references to Device, Subject, MovementType
-
-raw CSV files
-  → MotionSample fact table
-
-channels[]
-  → SensorChannel / MeasurementChannel registry
-
-movement_type
-  → MovementType enumeration
-
-status
-  → DataStatus enumeration
-
-file_role
-  → DataFileRole enumeration
-
-data_format
-  → DataFormat enumeration
-```
-
-Children should not be exposed to FDAM concepts directly. The children-facing model remains:
-
-```text
-experiment → device → session/file → attempt/record → rows of data
-```
-
----
-
-## Done
-
-* Project identity selected:
-
-  * Stofendez Lab
-  * MotionBlocks
-  * MotionLink
-* GitHub repository created.
-* Basic repository structure planned.
-* `llm/` project memory structure discussed.
-* PlatformIO installed and tested.
-* M5StickC Plus2 detected as USB serial device.
-* First firmware uploaded successfully.
-* Screen output works.
-* Serial output works.
-* IMU logger v0.1 works.
-* `M5.Imu.update()` issue discovered and fixed.
-* Button-controlled IMU logger v0.2 works.
-* Session-aware IMU logger v0.3 works.
-* Button A start/stop logic works.
-* Button B next-session logic works.
-* Python Serial logger works.
-* Draft metadata generation works.
-* Generated data is ignored by Git.
-* Metadata format agreed:
-
-  * `experiments.json`
-  * `recording_sessions.json`
-* Raw data path convention agreed:
-
-  * `data/raw/[experiment_id]/[device_id]/session_[session_id].csv`
-* Device display layout improved.
-* `wifi_config.example.h` added.
-* Real `wifi_config.h` excluded from Git.
-* Python HTTP logger works.
-* HTTP logger reachable from iPad on local network.
-* M5StickC connects to Wi-Fi.
-* Firmware sends protocol lines over HTTP.
-* Wireless recording works.
 
 ---
 
@@ -633,272 +725,251 @@ feature/session-aware-logger
 feature/python-serial-logger
 feature/display-layout
 feature/wifi-http-logger
+feature/device-info-event
+feature/selectable-sampling-rate
 ```
 
 Current active branch:
 
 ```text
-feature/wifi-http-logger
+feature/recording-runs-and-safe-file-names
+```
+
+Main goal of the active branch:
+
+```text
+make raw file names and metadata safe across device resets and repeated A001 sessions
 ```
 
 ---
 
 ## Current next actions
 
-### 1. Commit wireless HTTP firmware
-
-Commit message:
-
-```text
-Add Wi-Fi HTTP output to device logger
-```
-
-Expected files:
-
-```text
-firmware/m5stickc-plus2/src/main.cpp
-docs/journal.md
-```
-
-Do not commit:
-
-```text
-firmware/m5stickc-plus2/src/wifi_config.h
-data/raw/
-data/metadata/
-```
-
-### 2. Update project context files
+### 1. Implement recording_run_id and safe file names
 
 Update:
 
 ```text
-llm/context/project_brief.md
-llm/context/current_state.md
+tools/http_logger.py
+tools/serial_logger.py
 ```
 
-Recommended commit message:
+Target behavior:
 
 ```text
-Update project context after wireless logging milestone
+logger assigns recording_run_id
+device_session_id remains the firmware session id such as A001
+raw filenames are unique and readable
+metadata records include recording_run_id
+metadata records include device_session_id
+sample_rate_hz is included in safe filename
 ```
 
-### 3. Collect first real mini-dataset
-
-Initial experiment:
+Target filename direction:
 
 ```text
-EXP01 — Замеры ординарных движений дома
+run_0001_session_A001_100Hz.csv
 ```
 
-Possible sessions:
+Do not change firmware for this branch unless a concrete blocker appears.
+
+### 2. Create quick analysis tooling after safe file names
+
+Planned next tool:
 
 ```text
-A001 — standing_idle
-A002 — walking_normal
-A003 — hand_shaking
-A004 — jumps_basic
-A005 — sitting_to_standing
+tools/analyze_recordings.py
 ```
 
-For each session:
+Minimum useful behavior:
 
 ```text
-3–5 records
-short controlled movements
-manual metadata review after recording
+read one CSV file
+read all CSV files for one experiment
+calculate duration_sec
+calculate effective_sample_rate_hz
+calculate dt_ms statistics
+calculate basic acc_norm / gyro statistics
+save session_quality.csv
+save acc_norm and dt_ms plots
 ```
 
-### 4. Basic plotting
-
-After first CSV files are collected, implement a simple plotting script:
-
-```text
-tools/plot_session.py
-```
-
-Minimum goal:
-
-* read one session CSV;
-* plot `acc_norm` over time;
-* separate records by `record_id`;
-* optionally plot `ax/ay/az` and `gx/gy/gz`.
+This is the next practical step before building a metadata browser.
 
 ---
 
-## Planned utility — minimal metadata tool
+## Planned utility — basic metadata and plot browser
 
-A small metadata utility is planned, but it should remain intentionally limited.
+A small local browser is planned after safe filenames and quick analysis tooling.
 
-Purpose:
-
-* inspect existing experiments;
-* inspect recording sessions;
-* find sessions that still need description;
-* check consistency between metadata and raw CSV files;
-* mark unnecessary or bad sessions without physically deleting data.
-
-Working name:
+Preferred first implementation:
 
 ```text
-tools/metadata_tool.py
+tools/motion_browser.py
 ```
 
-Initial commands:
+Likely stack:
 
 ```text
-list-experiments
-list-sessions --experiment-id EXP01
-list-sessions --status "auto created. needs description."
-show-session --session-uid EXP01_m5_001_A001
-mark-session --session-uid EXP01_m5_001_A001 --status bad
-check-files
+Streamlit
+```
+
+Initial scope:
+
+```text
+read recording_sessions.json
+list sessions / recording runs
+filter by experiment_id, device_id, sample_rate_hz, movement label, status
+open one CSV file
+show acc_norm plot
+show ax / ay / az plot
+show gx / gy / gz plot
+show dt_ms plot
+show basic quality metrics
 ```
 
 Current boundary:
 
 ```text
-This is not a database layer.
-This is not a GUI browser.
-This is not a full data management application.
+This is a local lab tool.
+This is not a product dashboard.
+This is not a full metadata editor yet.
 ```
-
-Do not implement yet:
-
-* physical deletion of CSV files;
-* interactive UI;
-* full metadata editor;
-* complex search;
-* schema migrations.
-
-Rationale:
-
-The current JSON-based metadata layer is temporary and lightweight.
-For serious data management, a database will be more appropriate later.
-
-The utility should only reduce manual friction while we are still collecting early prototype data.
 
 Status:
 
 ```text
-planned
+planned after safe file names and quick analysis
 ```
 
 ---
 
-## Planned analysis layer — experimental IMU-only displacement features
+## Planned analysis layer — quick quality and ML features
 
-Later we plan to explore experimental derived motion features based on IMU-only trajectory approximation.
+The immediate planned analysis layer should focus on quick, useful metrics for collected CSV files.
 
-This should not be implemented in firmware now.
-
-Current rule:
+Working name:
 
 ```text
-Device stays simple.
-Serial / HTTP loggers stay simple.
-Trajectory-like features are computed later in Python analysis scripts.
+tools/analyze_recordings.py
 ```
 
-Possible future script:
+Initial outputs:
 
 ```text
-tools/compute_features.py
+data/analysis/[experiment_id]/session_quality.csv
+data/analysis/[experiment_id]/plots/
 ```
 
-Possible output:
+Minimum metrics:
 
 ```text
-data/features/[experiment_id]/[device_id]/session_[session_id]_features.json
+rows
+duration_sec
+configured sample_rate_hz
+effective_sample_rate_hz
+mean_dt_ms
+median_dt_ms
+min_dt_ms
+max_dt_ms
+p95_dt_ms
+gap count
+acc_norm_mean
+acc_norm_std
+acc_norm_max
+gyro_norm_mean
+gyro_norm_max
+quality_status
 ```
 
-or:
+Possible quality statuses:
 
 ```text
-data/processed/[experiment_id]/[device_id]/session_[session_id]_features.csv
+OK
+WARN_GAPS
+WARN_SHORT
+WARN_RATE_MISMATCH
+BAD_EMPTY
 ```
 
-The goal is not to reconstruct the true physical trajectory with high precision.
-
-The goal is to compute experimental metrics that may correlate with fall-like events:
+Near-term ML / education path:
 
 ```text
-estimated_path_length
-estimated_displacement_norm
-estimated_vertical_displacement
-vertical_drop_score
-peak_velocity_estimate
-impact_after_drop_score
+MotionBlocks CSV
+  → features.csv
+  → Orange Data Mining / scikit-learn / Edge Impulse
 ```
 
-Basic idea:
+Children-facing quick-win classes:
 
 ```text
-For each record:
-  velocity = 0 at record start
-  position = 0 at record start
-  estimate initial gravity from first samples
-  estimate orientation from gyro integration
-  transform acceleration to approximate world frame
-  subtract gravity
-  integrate acceleration to velocity
-  integrate velocity to position
-  compute displacement/path metrics
-```
-
-Important limitation:
-
-```text
-These are experimental IMU-only estimates.
-They are not reliable physical coordinates.
-They may drift due to sensor bias, gravity compensation error, and orientation error.
-```
-
-Reason for still keeping this idea:
-
-```text
-Even noisy displacement-like metrics may be useful as weak features for fall-like classification, especially for short records reset at each record_id.
-```
-
-Implementation status:
-
-```text
-planned / future
-```
-
-Do not implement yet:
-
-* on-device trajectory calculation;
-* firmware-side orientation tracking;
-* real-time fall detection;
-* use of displacement estimate as a single decisive fall signal.
-
-Next step before implementation:
-
-```text
-Collect labeled examples first:
 idle
 walking
-jumping
-shaking
+shake
+impact
 fall_like
 ```
 
-Then evaluate whether displacement-like metrics are actually useful.
+Status:
+
+```text
+planned after safe file names
+```
+
+---
+
+## Known Issues / Limitations
+
+* Current filename convention `session_A001.csv` is not safe across device reset.
+* Current `session_uid = experiment_id + device_id + session_id` is not safe if `A001` repeats.
+* `sample_rate_hz` currently means configured / selected rate, not verified effective rate.
+* Effective sample rate is not yet calculated automatically.
+* Long-record stability at 25 / 50 / 100 Hz still needs measurement.
+* Battery life in Wi-Fi batch logging mode is not yet measured.
+* Metadata still requires manual completion after recording.
+* `records_actual` is not automatically updated after STOP.
+* There is no plot viewer yet.
+* There is no quick quality report yet.
+* There is no metadata browser yet.
 
 ---
 
 ## Open questions
 
-* How stable is HTTP POST at 10 Hz during real wrist motion?
-* Do we need batching or buffering on the device?
-* What is the practical battery life in Wi-Fi logging mode?
-* Should Python logger update `records_actual` automatically after STOP?
-* Should metadata contain connection / transport information?
+* How exactly should `recording_run_id` be generated: metadata scan, file scan, or both?
+* What final safe filename format should be adopted?
+* Should `sample_rate_hz` be renamed to `configured_sample_rate_hz`, or should a separate field be added later?
+* Should `effective_sample_rate_hz` be written back to metadata or kept in `data/analysis/`?
+* Should `records_actual` be updated by the logger after STOP?
+* Should metadata contain transport information such as `http_batch`, `serial`, and batch parameters?
 * Should `channels` be repeated in each recording session or moved to a shared schema/device registry?
 * Should events and DATA rows live in the same CSV, or should event logs be separated later?
-* Should `device_id` ever be stored in firmware, or always supplied by the logger?
+* Should `device_id` ever be stored in firmware, or always resolved by the logger?
 * When should SQLite be introduced?
-* When should MQTT be introduced as a separate IoT lesson?
 * Should Button A double click remain the start action, or should UX be simplified to start/stop toggle later?
-* When should 25 Hz / 50 Hz modes be introduced?
+* Which first ML demo should be used with children: Edge Impulse, Orange Data Mining, or local scikit-learn?
+
+---
+
+## Recent Changes
+
+### 2026-06-13
+
+* Added `EVENT,DEVICE_INFO` and MAC-based device resolution.
+* Added startup sampling-rate selection: 5 / 10 / 25 / 50 / 100 Hz.
+* Added `EVENT,SAMPLE_RATE` to the protocol.
+* Tested per-sample HTTP POST and found it insufficient for 25 / 50 Hz.
+* Tested HTTP keep-alive and rejected it as insufficient.
+* Implemented HTTP batch mode for `DATA` rows during recording.
+* Confirmed 100 Hz works in current HTTP batch test.
+* Updated `http_logger.py` comments to document newline-separated batch support.
+* Rewrote `project_brief.md` using project-brief artifact conventions.
+* Created session summary for the HTTP batch / analysis planning session.
+* New immediate next step: introduce `recording_run_id` and safe file names.
+
+### 2026-06-10
+
+* Wireless HTTP logging verified and working.
+* Phase transition from wired Serial debugging to wireless HTTP data collection.
+* Device display layout improved.
+* Draft JSON metadata generation working.
