@@ -1,6 +1,8 @@
 import argparse  # нужна для чтения параметров командной строки: --host, --port, --experiment-id, --device-id
 import csv  # нужна для записи EVENT/DATA строк в CSV-файлы сессий
 import json  # нужна для чтения и записи metadata-файлов experiments.json и recording_sessions.json
+import re  # нужна для поиска run_id в именах существующих файлов
+import threading  # нужна для Lock — защиты от одновременной записи в нескольких потоках
 from datetime import datetime  # нужна для создания timestamp в metadata, например started_at
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # нужны для создания простого HTTP-сервера и обработки GET/POST запросов
 from pathlib import Path  # нужна для удобной и безопасной работы с путями к файлам и папкам
@@ -14,7 +16,7 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 # - поднять локальный HTTP-сервер на ноутбуке;
 # - принимать строки протокола от M5StickC Plus2 по Wi-Fi;
 # - принимать как одиночные строки, так и batch из нескольких строк;
-# - сохранять эти строки в те же CSV-файлы, что и serial_logger.py;
+# - сохранять эти строки в CSV-файлы;
 # - опционально создавать черновые записи metadata.
 #
 # Общая схема:
@@ -23,7 +25,7 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 #       → Wi-Fi
 #       → HTTP POST /line
 #       → tools/http_logger.py
-#       → data/raw/EXP01/m5_001/session_A001.csv
+#       → data/raw/EXP01/m5_001/run_A_session_A001_100Hz.csv
 #       → data/metadata/experiments.json
 #       → data/metadata/recording_sessions.json
 #
@@ -34,6 +36,22 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 # - firmware может отправлять несколько DATA-строк в одном POST body;
 # - logger разбивает HTTP body через splitlines() и обрабатывает
 #   каждую строку как обычную строку протокола.
+#
+# recording_run_id:
+# - назначается logger'ом при старте, не firmware'ом;
+# - это одна заглавная буква: A, B, C, ...;
+# - определяется сканированием папки data/raw/EXP/device/ при старте;
+# - если там нет файлов run_*_session_*.csv, первый run = A;
+# - если максимальный run = B, следующий = C;
+# - старые файлы session_A001.csv (без run_id) не мешают сканированию;
+# - один run_id живёт на весь запуск logger'а;
+# - после device reset и нового запуска logger'а run_id станет следующей буквой.
+#
+# Имя файла:
+#
+#   run_A_session_A001_100Hz.csv
+#   run_A_session_A002_100Hz.csv
+#   run_B_session_A001_50Hz.csv
 #
 # Текущая transport-модель:
 #
@@ -49,9 +67,6 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 #       перед STOP прошивка должна сбросить накопленный DATA batch;
 #       STOP приходит после всех DATA текущей записи.
 #
-# Это позволяет сохранить простой endpoint /line и при этом поддержать
-# более высокие частоты дискретизации по Wi-Fi.
-#
 # Пример запуска:
 #
 #   python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --device-id m5_001 --create-metadata
@@ -60,16 +75,6 @@ from urllib.parse import urlparse  # нужна для разбора пути H
 #
 #   GET  http://127.0.0.1:8080/health
 #   POST http://127.0.0.1:8080/line
-#
-# Пример одиночного body для POST /line:
-#
-#   EVENT,SAMPLE_RATE,10,12345
-#
-# Пример batch body для POST /line:
-#
-#   DATA,A001,1,1,13100,0.01,-0.03,0.98,0.1,0.0,0.0,0.98
-#   DATA,A001,1,2,13120,0.01,-0.03,0.98,0.1,0.0,0.0,0.98
-#   DATA,A001,1,3,13140,0.01,-0.03,0.98,0.1,0.0,0.0,0.98
 #
 # ============================================================
 
@@ -107,12 +112,6 @@ CSV_HEADER = [
 
 # ------------------------------------------------------------
 # Описание каналов текущей схемы данных.
-#
-# Эти данные попадают в черновую metadata-запись по сессии.
-# Сейчас схема простая:
-# - 3 оси акселерометра;
-# - 3 оси гироскопа;
-# - производный показатель acc_norm.
 # ------------------------------------------------------------
 DEFAULT_CHANNELS = [
     {"name": "ax", "kind": "acceleration", "axis": "x", "unit": "g"},
@@ -126,21 +125,18 @@ DEFAULT_CHANNELS = [
 
 
 # Статус для metadata-записей, созданных автоматически.
-# Смысл: структура создана, но человек должен позже заполнить описание.
 AUTO_STATUS = "auto created. needs description."
+
+# Паттерн для поиска run_id в именах файлов.
+# Пример: run_A_session_A001_100Hz.csv → группа 1 = "A"
+RUN_FILE_PATTERN = re.compile(r"^run_([A-Z]+)_session_.*\.csv$")
 
 
 def now_iso() -> str:
     """
-    Вернуть текущее локальное время в ISO-формате.
-
-    Микросекунды убираем, чтобы timestamp был читаемым:
+    Вернуть текущее локальное время в ISO-формате без микросекунд.
 
         2026-06-10T19:30:00
-
-    а не:
-
-        2026-06-10T19:30:00.123456
     """
     return datetime.now().replace(microsecond=0).isoformat()
 
@@ -149,17 +145,7 @@ def load_json_list(path: Path) -> list[dict]:
     """
     Прочитать JSON-файл, который должен содержать список объектов.
 
-    Пример ожидаемого содержимого:
-
-        [
-          {"experiment_id": "EXP01"},
-          {"experiment_id": "EXP02"}
-        ]
-
-    Если файла нет — возвращаем пустой список.
-    Если файл пустой — тоже возвращаем пустой список.
-
-    Это удобно: logger может сам создать metadata-файлы при первом запуске.
+    Если файла нет или он пустой — возвращаем пустой список.
     """
     if not path.exists():
         return []
@@ -180,9 +166,6 @@ def load_json_list(path: Path) -> list[dict]:
 def save_json_list(path: Path, data: list[dict]) -> None:
     """
     Сохранить список объектов в читаемом JSON-формате.
-
-    indent=2 делает файл удобным для ручного просмотра и редактирования.
-    ensure_ascii=False позволяет нормально сохранять русский текст.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -196,13 +179,8 @@ def session_number_from_id(session_id: str) -> Optional[int]:
     """
     Преобразовать session_id в числовой file_id.
 
-    Пример:
-
         A001 -> 1
-        A002 -> 2
         A015 -> 15
-
-    Если формат неожиданный, возвращаем None.
     """
     if len(session_id) >= 2 and session_id[0].isalpha() and session_id[1:].isdigit():
         return int(session_id[1:])
@@ -214,8 +192,6 @@ def normalize_mac_address(mac_address: str) -> str:
     """
     Нормализовать MAC-адрес для сопоставления.
 
-    Пример:
-
         f0:24:f9:97:ed:08 -> F0:24:F9:97:ED:08
     """
     return mac_address.strip().upper()
@@ -224,15 +200,6 @@ def normalize_mac_address(mac_address: str) -> str:
 def find_device_by_mac(devices: list[dict], mac_address: str) -> Optional[dict]:
     """
     Найти устройство в registry по MAC-адресу.
-
-    devices.json ожидается в формате:
-
-        [
-          {
-            "device_id": "m5_001",
-            "mac_address": "F0:24:F9:97:ED:08"
-          }
-        ]
     """
     target_mac = normalize_mac_address(mac_address)
 
@@ -248,6 +215,94 @@ def find_device_by_mac(devices: list[dict], mac_address: str) -> Optional[dict]:
     return None
 
 
+# ------------------------------------------------------------
+# recording_run_id
+#
+# run_id — это одна или несколько заглавных букв: A, B, C, ... Z, AA, AB, ...
+# Аналогично именованию колонок в Excel.
+#
+# Логика:
+# - при старте logger сканирует папку data/raw/EXP/device/;
+# - ищет файлы по паттерну run_*_session_*.csv;
+# - находит максимальный run_id среди существующих файлов;
+# - следующий run_id = следующая буква после максимального.
+#
+# Примеры:
+#   нет файлов run_*  →  A
+#   max = A           →  B
+#   max = Z           →  AA
+#   max = AZ          →  BA
+# ------------------------------------------------------------
+
+def run_id_to_int(run_id: str) -> int:
+    """
+    Перевести буквенный run_id в число для сравнения.
+
+        A  -> 1
+        B  -> 2
+        Z  -> 26
+        AA -> 27
+        AB -> 28
+    """
+    result = 0
+    for ch in run_id:
+        result = result * 26 + (ord(ch) - ord('A') + 1)
+    return result
+
+
+def int_to_run_id(n: int) -> str:
+    """
+    Перевести число обратно в буквенный run_id.
+
+        1  -> A
+        26 -> Z
+        27 -> AA
+    """
+    result = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(ord('A') + remainder) + result
+    return result
+
+
+def find_next_run_id(device_dir: Path) -> str:
+    """
+    Найти следующий свободный recording_run_id для данной папки устройства.
+
+    Сканируем файлы вида:
+
+        run_A_session_A001_100Hz.csv
+        run_B_session_A001_50Hz.csv
+
+    Берём максимальный существующий run_id и возвращаем следующий.
+
+    Старые файлы session_A001.csv (без run_id) игнорируются.
+
+    Если подходящих файлов нет — возвращаем "A".
+    """
+    if not device_dir.exists():
+        return "A"
+
+    max_n = 0
+
+    for f in device_dir.iterdir():
+        if not f.is_file():
+            continue
+
+        m = RUN_FILE_PATTERN.match(f.name)
+
+        if not m:
+            continue
+
+        run_id = m.group(1)
+        n = run_id_to_int(run_id)
+
+        if n > max_n:
+            max_n = n
+
+    return int_to_run_id(max_n + 1)
+
+
 def create_draft_experiment_metadata(
     experiments_path: Path,
     experiment_id: str,
@@ -256,12 +311,7 @@ def create_draft_experiment_metadata(
     """
     Добавить черновую запись об эксперименте в experiments.json.
 
-    Важное правило:
-    если experiment_id уже есть, ничего не перезаписываем.
-
-    Почему:
-    человек мог уже руками заполнить title, goal, participants, comments.
-    Logger не должен уничтожать ручные правки.
+    Если experiment_id уже есть — не перезаписываем.
     """
     experiments = load_json_list(experiments_path)
 
@@ -303,6 +353,7 @@ def create_draft_session_metadata(
     experiment_id: str,
     device_id: str,
     session_id: str,
+    recording_run_id: str,
     file_path: Path,
     mac_address: Optional[str] = None,
     firmware_version: Optional[str] = None,
@@ -312,16 +363,16 @@ def create_draft_session_metadata(
     """
     Добавить черновую запись о recording session в recording_sessions.json.
 
-    session_uid строится так:
+    session_uid теперь включает recording_run_id:
 
-        EXP01_m5_001_A001
+        EXP01_m5_001_A_A001
 
-    Важное правило:
-    если session_uid уже есть, ничего не перезаписываем.
+    Если session_uid уже есть — не перезаписываем.
     """
     sessions = load_json_list(sessions_path)
 
-    session_uid = f"{experiment_id}_{device_id}_{session_id}"
+    # session_uid включает recording_run_id для уникальности.
+    session_uid = f"{experiment_id}_{device_id}_{recording_run_id}_{session_id}"
 
     for item in sessions:
         if item.get("session_uid") == session_uid:
@@ -333,6 +384,9 @@ def create_draft_session_metadata(
     draft = {
         "experiment_id": experiment_id,
         "device_id": device_id,
+        "recording_run_id": recording_run_id,
+        "device_session_id": session_id,
+        # session_id сохраняем для обратной совместимости
         "session_id": session_id,
         "session_uid": session_uid,
         "file_id": file_id,
@@ -370,15 +424,14 @@ class SessionWriter:
     Класс, который пишет строки протокола MotionBlocks в CSV-файлы.
 
     Он не знает ничего про HTTP.
-    Его задача ниже уровнем:
-
-        протокольная строка EVENT/DATA
-            → CSV-файл нужной сессии
-            → metadata при необходимости
-
-    Это важно архитектурно:
     HTTP-сервер отвечает за транспорт.
     SessionWriter отвечает за запись данных.
+
+    Thread safety:
+    Защищён через self._lock.
+    ThreadingHTTPServer создаёт отдельный поток на каждый запрос,
+    поэтому при высокой частоте дискретизации несколько потоков могут
+    одновременно вызывать write_data().
     """
 
     def __init__(
@@ -391,57 +444,44 @@ class SessionWriter:
         sessions_path: Path,
         devices_path: Path,
     ) -> None:
-        # Базовая папка для raw data, обычно data/raw.
         self.base_dir = base_dir
-
-        # experiment_id задаётся пользователем при запуске logger.
-        # device_id может быть задан явно через --device-id
-        # или автоматически определён по DEVICE_INFO / devices.json.
         self.experiment_id = experiment_id
         self.cli_device_id = device_id
         self.effective_device_id: Optional[str] = device_id
 
-        # Пути и registry устройств.
         self.devices_path = devices_path
         self.devices = load_json_list(devices_path)
         self.device_registry_record: Optional[dict] = None
 
-        # DEVICE_INFO, полученный от устройства.
         self.mac_address: Optional[str] = None
         self.firmware_version: Optional[str] = None
 
-        # Фактическая частота дискретизации, выбранная на устройстве.
-        # По умолчанию 10 Hz, но устройство может прислать:
-        #
-        #   EVENT,SAMPLE_RATE,50,12345
-        #
-        # Тогда значение будет обновлено до открытия первой сессии.
+        # Частота дискретизации, выбранная на устройстве.
+        # Обновляется при получении EVENT,SAMPLE_RATE.
         self.sample_rate_hz: int = 10
 
-        # Надо ли автоматически создавать черновую metadata.
         self.create_metadata = create_metadata
-
-        # Пути к metadata-файлам.
         self.experiments_path = experiments_path
         self.sessions_path = sessions_path
 
-        # Текущая открытая сессия.
+        # recording_run_id назначается при первом открытии сессии,
+        # когда уже известен effective_device_id.
+        # До этого момента None.
+        self.recording_run_id: Optional[str] = None
+
         self.current_session_id: Optional[str] = None
-
-        # Путь к текущему открытому CSV-файлу.
         self.current_path: Optional[Path] = None
-
-        # Открытый файл и CSV writer.
         self.current_file: Optional[TextIO] = None
         self.current_writer: Optional[csv.writer] = None
+
+        # Lock для thread-safe записи в файл.
+        self._lock = threading.Lock()
 
     def require_device_id(self) -> str:
         """
         Вернуть эффективный device_id.
 
-        Если device_id не задан через CLI и ещё не определён по DEVICE_INFO,
-        открывать session-файл нельзя: иначе появятся грязные данные
-        под неизвестным устройством.
+        Если device_id неизвестен — открывать session-файл нельзя.
         """
         if self.effective_device_id:
             return self.effective_device_id
@@ -450,6 +490,29 @@ class SessionWriter:
             "device_id is not provided and device could not be resolved from DEVICE_INFO. "
             "Provide --device-id or register device MAC in data/metadata/devices.json."
         )
+
+    def _ensure_recording_run_id(self) -> str:
+        """
+        Убедиться, что recording_run_id назначен.
+
+        Если ещё не назначен — сканируем папку устройства и назначаем.
+
+        Это делается лениво, потому что при старте logger'а
+        effective_device_id может ещё не быть известен
+        (если --device-id не задан и DEVICE_INFO ещё не пришёл).
+        """
+        if self.recording_run_id is not None:
+            return self.recording_run_id
+
+        device_id = self.require_device_id()
+        device_dir = self.base_dir / self.experiment_id / device_id
+
+        self.recording_run_id = find_next_run_id(device_dir)
+
+        print(f"[RUN] recording_run_id assigned: {self.recording_run_id}")
+        print(f"[RUN] scanned: {device_dir}")
+
+        return self.recording_run_id
 
     def handle_device_info(
         self,
@@ -461,11 +524,8 @@ class SessionWriter:
         Обработать EVENT,DEVICE_INFO.
 
         Правило:
-
         - если --device-id задан, он имеет приоритет;
-        - DEVICE_INFO используется для служебной проверки и enrichment metadata;
-        - если --device-id не задан, device_id должен быть найден по devices.json;
-        - если найти не удалось, это ошибка.
+        - если --device-id не задан, device_id ищется в devices.json по MAC.
         """
         self.mac_address = normalize_mac_address(mac_address)
         self.firmware_version = firmware_version
@@ -521,16 +581,8 @@ class SessionWriter:
         """
         Обработать EVENT,SAMPLE_RATE.
 
-        Формат события:
-
-            EVENT,SAMPLE_RATE,sample_rate_hz,timestamp_ms
-
-        Пример:
-
-            EVENT,SAMPLE_RATE,50,12345
-
-        Значение сохраняется в состоянии logger'а и используется при
-        создании draft metadata для следующих сессий.
+        Значение сохраняется и используется при создании draft metadata
+        и при формировании имени файла.
         """
         try:
             parsed_rate = int(sample_rate_hz)
@@ -553,22 +605,32 @@ class SessionWriter:
         """
         Построить путь к CSV-файлу сессии.
 
+        Новый формат:
+
+            data/raw/EXP01/m5_001/run_A_session_A001_100Hz.csv
+
         Пример:
 
-            base_dir      = data/raw
-            experiment_id = EXP01
-            device_id     = m5_001
-            session_id    = A001
+            base_dir          = data/raw
+            experiment_id     = EXP01
+            device_id         = m5_001
+            recording_run_id  = A
+            session_id        = A001
+            sample_rate_hz    = 100
 
         Результат:
 
-            data/raw/EXP01/m5_001/session_A001.csv
+            data/raw/EXP01/m5_001/run_A_session_A001_100Hz.csv
         """
+        run_id = self._ensure_recording_run_id()
+        device_id = self.require_device_id()
+        file_name = f"run_{run_id}_session_{session_id}_{self.sample_rate_hz}Hz.csv"
+
         return (
             self.base_dir
             / self.experiment_id
-            / self.require_device_id()
-            / f"session_{session_id}.csv"
+            / device_id
+            / file_name
         )
 
     def open_session(self, session_id: str, timestamp_ms: str) -> None:
@@ -577,69 +639,75 @@ class SessionWriter:
 
         Если был открыт другой файл, он закрывается.
 
-        Если файл новый:
-            - создаём папку;
-            - пишем CSV header.
-
-        Если включён --create-metadata:
-            - создаём черновую запись experiment, если её нет;
-            - создаём черновую запись session, если её нет.
-
-        Затем записываем EVENT NEW_SESSION в CSV.
+        Новый файл — всегда новый: режим "w", не "a".
+        Это безопасно, потому что имя файла уже включает run_id.
+        Если файл с таким именем вдруг уже есть (нештатная ситуация),
+        мы печатаем предупреждение.
         """
-        self.close_session()
+        with self._lock:
+            self._close_session_unsafe()
 
-        path = self._session_path(session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
+            path = self._session_path(session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        file_exists = path.exists() and path.stat().st_size > 0
+            if path.exists():
+                print(
+                    f"[WARN] File already exists, will append: {path}"
+                )
+                mode = "a"
+                write_header = False
+            else:
+                mode = "w"
+                write_header = True
 
-        self.current_session_id = session_id
-        self.current_path = path
-        self.current_file = open(path, "a", newline="", encoding="utf-8")
-        self.current_writer = csv.writer(self.current_file)
+            self.current_session_id = session_id
+            self.current_path = path
+            self.current_file = open(path, mode, newline="", encoding="utf-8")
+            self.current_writer = csv.writer(self.current_file)
 
-        if not file_exists:
-            self.current_writer.writerow(CSV_HEADER)
+            if write_header:
+                self.current_writer.writerow(CSV_HEADER)
 
-        if self.create_metadata:
-            create_draft_experiment_metadata(
-                experiments_path=self.experiments_path,
-                experiment_id=self.experiment_id,
-                device_id=self.require_device_id(),
-            )
+            if self.create_metadata:
+                run_id = self._ensure_recording_run_id()
 
-            create_draft_session_metadata(
-                sessions_path=self.sessions_path,
-                experiment_id=self.experiment_id,
-                device_id=self.require_device_id(),
+                create_draft_experiment_metadata(
+                    experiments_path=self.experiments_path,
+                    experiment_id=self.experiment_id,
+                    device_id=self.require_device_id(),
+                )
+
+                create_draft_session_metadata(
+                    sessions_path=self.sessions_path,
+                    experiment_id=self.experiment_id,
+                    device_id=self.require_device_id(),
+                    session_id=session_id,
+                    recording_run_id=run_id,
+                    file_path=path,
+                    mac_address=self.mac_address,
+                    firmware_version=self.firmware_version,
+                    device_registry_record=self.device_registry_record,
+                    sample_rate_hz=self.sample_rate_hz,
+                )
+
+            self._write_event_unsafe(
                 session_id=session_id,
-                file_path=path,
-                mac_address=self.mac_address,
-                firmware_version=self.firmware_version,
-                device_registry_record=self.device_registry_record,
-                sample_rate_hz=self.sample_rate_hz,
+                record_id="",
+                timestamp_ms=timestamp_ms,
+                event_type="NEW_SESSION",
+                sample_count="",
             )
-
-        self.write_event(
-            session_id=session_id,
-            record_id="",
-            timestamp_ms=timestamp_ms,
-            event_type="NEW_SESSION",
-            sample_count="",
-        )
 
         print(f"[SESSION] {session_id}")
+        print(f"[RUN] {self.recording_run_id}")
         print(f"[FILE] {path}")
 
-    def close_session(self) -> None:
+    def _close_session_unsafe(self) -> None:
         """
-        Закрыть текущий CSV-файл.
+        Закрыть текущий CSV-файл без захвата lock.
 
-        Вызывается:
-        - при переключении на новую сессию;
-        - при остановке сервера;
-        - при Ctrl+C.
+        Вызывается только изнутри методов, которые уже держат lock,
+        или из close_session() при завершении программы.
         """
         if self.current_file is not None:
             self.current_file.flush()
@@ -650,17 +718,30 @@ class SessionWriter:
         self.current_path = None
         self.current_session_id = None
 
+    def close_session(self) -> None:
+        """
+        Закрыть текущий CSV-файл.
+
+        Вызывается при завершении программы (Ctrl+C).
+        """
+        with self._lock:
+            self._close_session_unsafe()
+
     def ensure_session(self, session_id: str) -> None:
         """
         Убедиться, что открыт файл нужной сессии.
 
         Если пришла строка A002, а открыт файл A001,
         logger переключится на файл A002.
+
+        Вызывается без lock — lock захватывается внутри open_session.
         """
         if self.current_session_id != session_id:
+            if self.current_session_id is not None:
+                print(f"[SESSION] switching from {self.current_session_id} to {session_id}")
             self.open_session(session_id=session_id, timestamp_ms="")
 
-    def write_event(
+    def _write_event_unsafe(
         self,
         session_id: str,
         record_id: str,
@@ -669,13 +750,10 @@ class SessionWriter:
         sample_count: str,
     ) -> None:
         """
-        Записать EVENT-строку в CSV.
+        Записать EVENT-строку в CSV без захвата lock.
 
-        EVENT-строки не содержат ax/ay/az/gx/gy/gz,
-        поэтому эти поля остаются пустыми.
+        Вызывается только изнутри методов, которые уже держат lock.
         """
-        self.ensure_session(session_id)
-
         if self.current_writer is None or self.current_file is None:
             raise RuntimeError("No active session file")
 
@@ -698,6 +776,28 @@ class SessionWriter:
             ]
         )
         self.current_file.flush()
+
+    def write_event(
+        self,
+        session_id: str,
+        record_id: str,
+        timestamp_ms: str,
+        event_type: str,
+        sample_count: str,
+    ) -> None:
+        """
+        Записать EVENT-строку в CSV (публичный метод с lock).
+        """
+        self.ensure_session(session_id)
+
+        with self._lock:
+            self._write_event_unsafe(
+                session_id=session_id,
+                record_id=record_id,
+                timestamp_ms=timestamp_ms,
+                event_type=event_type,
+                sample_count=sample_count,
+            )
 
     def write_data(self, parts: list[str]) -> None:
         """
@@ -730,28 +830,29 @@ class SessionWriter:
 
         self.ensure_session(session_id)
 
-        if self.current_writer is None or self.current_file is None:
-            raise RuntimeError("No active session file")
+        with self._lock:
+            if self.current_writer is None or self.current_file is None:
+                raise RuntimeError("No active session file")
 
-        self.current_writer.writerow(
-            [
-                "DATA",
-                session_id,
-                record_id,
-                sample_id,
-                timestamp_ms,
-                ax,
-                ay,
-                az,
-                gx,
-                gy,
-                gz,
-                acc_norm,
-                "",
-                "",
-            ]
-        )
-        self.current_file.flush()
+            self.current_writer.writerow(
+                [
+                    "DATA",
+                    session_id,
+                    record_id,
+                    sample_id,
+                    timestamp_ms,
+                    ax,
+                    ay,
+                    az,
+                    gx,
+                    gy,
+                    gz,
+                    acc_norm,
+                    "",
+                    "",
+                ]
+            )
+            self.current_file.flush()
 
 
 def handle_event(parts: list[str], writer: SessionWriter) -> None:
@@ -765,6 +866,7 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
         EVENT,NEW_SESSION,session_id,timestamp_ms
         EVENT,START,session_id,record_id,timestamp_ms
         EVENT,STOP,session_id,record_id,timestamp_ms,sample_count
+        EVENT,IMU_NOT_UPDATED,session_id,record_id,timestamp_ms
     """
     if len(parts) < 3:
         print(f"[WARN] Bad EVENT row: {parts}")
@@ -777,14 +879,10 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             print(f"[WARN] Bad DEVICE_INFO event: {parts}")
             return
 
-        mac_address = parts[2]
-        firmware_version = parts[3]
-        timestamp_ms = parts[4]
-
         writer.handle_device_info(
-            mac_address=mac_address,
-            firmware_version=firmware_version,
-            timestamp_ms=timestamp_ms,
+            mac_address=parts[2],
+            firmware_version=parts[3],
+            timestamp_ms=parts[4],
         )
 
         print("[INFO] Received event type: DEVICE_INFO")
@@ -795,12 +893,9 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             print(f"[WARN] Bad SAMPLE_RATE event: {parts}")
             return
 
-        sample_rate_hz = parts[2]
-        timestamp_ms = parts[3]
-
         writer.handle_sample_rate(
-            sample_rate_hz=sample_rate_hz,
-            timestamp_ms=timestamp_ms,
+            sample_rate_hz=parts[2],
+            timestamp_ms=parts[3],
         )
         return
 
@@ -809,10 +904,7 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             print(f"[WARN] Bad NEW_SESSION event: {parts}")
             return
 
-        session_id = parts[2]
-        timestamp_ms = parts[3]
-
-        writer.open_session(session_id=session_id, timestamp_ms=timestamp_ms)
+        writer.open_session(session_id=parts[2], timestamp_ms=parts[3])
         return
 
     if event_type == "START":
@@ -820,19 +912,15 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             print(f"[WARN] Bad START event: {parts}")
             return
 
-        session_id = parts[2]
-        record_id = parts[3]
-        timestamp_ms = parts[4]
-
         writer.write_event(
-            session_id=session_id,
-            record_id=record_id,
-            timestamp_ms=timestamp_ms,
+            session_id=parts[2],
+            record_id=parts[3],
+            timestamp_ms=parts[4],
             event_type="START",
             sample_count="",
         )
 
-        print(f"[START] session={session_id}, record={record_id}")
+        print(f"[START] session={parts[2]}, record={parts[3]}")
         return
 
     if event_type == "STOP":
@@ -840,23 +928,32 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
             print(f"[WARN] Bad STOP event: {parts}")
             return
 
-        session_id = parts[2]
-        record_id = parts[3]
-        timestamp_ms = parts[4]
-        sample_count = parts[5]
-
         writer.write_event(
-            session_id=session_id,
-            record_id=record_id,
-            timestamp_ms=timestamp_ms,
+            session_id=parts[2],
+            record_id=parts[3],
+            timestamp_ms=parts[4],
             event_type="STOP",
-            sample_count=sample_count,
+            sample_count=parts[5],
         )
 
         print(
-            f"[STOP] session={session_id}, "
-            f"record={record_id}, samples={sample_count}"
+            f"[STOP] session={parts[2]}, "
+            f"record={parts[3]}, samples={parts[5]}"
         )
+        return
+
+    if event_type == "IMU_NOT_UPDATED":
+        # Firmware шлёт это событие если IMU не вернул данные.
+        # Записываем в CSV для последующего анализа качества данных.
+        if len(parts) == 5:
+            writer.write_event(
+                session_id=parts[2],
+                record_id=parts[3],
+                timestamp_ms=parts[4],
+                event_type="IMU_NOT_UPDATED",
+                sample_count="",
+            )
+        print(f"[WARN] IMU_NOT_UPDATED: session={parts[2] if len(parts) > 2 else '?'}")
         return
 
     print(f"[INFO] Ignored event type: {event_type}")
@@ -865,13 +962,6 @@ def handle_event(parts: list[str], writer: SessionWriter) -> None:
 def handle_protocol_line(line: str, writer: SessionWriter) -> None:
     """
     Обработать одну строку протокола MotionBlocks.
-
-    Эта функция не знает, откуда пришла строка:
-    - из Serial;
-    - из HTTP;
-    - из тестового файла.
-
-    Она работает только с текстовой строкой.
 
     Примеры строк:
 
@@ -909,27 +999,10 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
     """
     HTTP request handler.
 
-    Этот класс вызывается Python HTTP-сервером на каждый входящий запрос.
-
     Поддерживаем два endpoint:
 
-        GET /health
-
-            Простая проверка, что сервер жив.
-            Возвращает "ok".
-
-        POST /line
-
-            Основной endpoint.
-            Устройство отправляет сюда одну строку протокола EVENT/DATA
-            или batch из нескольких строк, разделённых переводом строки.
-
-    Важно:
-    writer хранится как class variable:
-
-        MotionBlocksRequestHandler.writer = writer
-
-    Это простой способ дать HTTP handler доступ к SessionWriter.
+        GET /health   — проверка, что сервер жив
+        POST /line    — основной endpoint для строк протокола
     """
 
     writer: SessionWriter
@@ -938,30 +1011,11 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
         """
         Отключить стандартный HTTP-log.
 
-        По умолчанию BaseHTTPRequestHandler печатает каждое обращение:
-
-            127.0.0.1 - - [date] "POST /line HTTP/1.1" 200 -
-
-        При 10 Hz это быстро засорит консоль.
-        Поэтому оставляем только наши осмысленные print().
+        При 100 Hz стандартный лог быстро засорит консоль.
         """
         return
 
     def _send_text_response(self, status_code: int, text: str) -> None:
-        """
-        Отправить простой текстовый HTTP-ответ.
-
-        Например:
-
-            status_code = 200
-            text = "ok\n"
-
-        Метод:
-        - кодирует текст в UTF-8;
-        - выставляет Content-Type;
-        - выставляет Content-Length;
-        - отправляет body.
-        """
         body = text.encode("utf-8")
 
         self.send_response(status_code)
@@ -971,21 +1025,6 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        """
-        Обработка GET-запросов.
-
-        Сейчас поддерживается только:
-
-            GET /health
-
-        Он нужен для ручной проверки сервера:
-
-            Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8080/health"
-
-        Ожидаемый ответ:
-
-            ok
-        """
         parsed = urlparse(self.path)
 
         if parsed.path == "/health":
@@ -996,46 +1035,17 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         """
-        Обработка POST-запросов.
+        Обработка POST /line.
 
-        Основной рабочий endpoint:
-
-            POST /line
-
-        Устройство отправляет body как plain text.
-
-        Body может содержать одну строку протокола:
-
-            EVENT,START,A001,1,13000
-
-        или несколько строк протокола сразу:
-
-            DATA,A001,1,1,13100,0.0123,-0.0341,0.9872,0.1200,-0.0300,0.0100,0.9880
-            DATA,A001,1,2,13120,0.0124,-0.0340,0.9871,0.1200,-0.0300,0.0100,0.9880
-            DATA,A001,1,3,13140,0.0125,-0.0339,0.9870,0.1200,-0.0300,0.0100,0.9880
-
-        Это используется для HTTP batch mode:
-        прошивка может копить DATA-строки и отправлять их одной пачкой,
-        чтобы уменьшить количество HTTP POST-запросов при 25 / 50 / 100 Hz.
-
-        Алгоритм:
-        1. Проверяем, что путь ровно /line.
-        2. Читаем Content-Length.
-        3. Читаем body заданной длины.
-        4. Декодируем body как UTF-8.
-        5. Разбиваем body на строки через splitlines().
-        6. Каждую непустую строку передаём в handle_protocol_line().
-        7. Возвращаем "ok".
+        Body может содержать одну строку или batch из нескольких строк.
+        splitlines() делает batch прозрачным для остальной логики.
         """
         parsed = urlparse(self.path)
 
-        # Другие POST endpoint пока не поддерживаем.
         if parsed.path != "/line":
             self._send_text_response(404, "not found\n")
             return
 
-        # HTTP-клиент должен сообщить, сколько байт в body.
-        # Без Content-Length сервер не знает, сколько читать из входящего потока.
         content_length_header = self.headers.get("Content-Length")
 
         if content_length_header is None:
@@ -1048,11 +1058,7 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
             self._send_text_response(400, "bad content length\n")
             return
 
-        # Читаем ровно content_length байт из HTTP body.
         raw_body = self.rfile.read(content_length)
-
-        # Декодируем body в строку.
-        # errors="ignore" нужен, чтобы не падать на случайных мусорных байтах.
         body = raw_body.decode("utf-8", errors="ignore").strip()
 
         if not body:
@@ -1060,13 +1066,6 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Устройство может отправить:
-            # - одну строку протокола в одном POST;
-            # - batch из нескольких строк протокола в одном POST.
-            #
-            # splitlines() делает транспортный batch прозрачным:
-            # ниже каждая строка обрабатывается так же, как если бы
-            # она пришла отдельным POST.
             for line in body.splitlines():
                 line = line.strip()
 
@@ -1076,94 +1075,28 @@ class MotionBlocksRequestHandler(BaseHTTPRequestHandler):
                 handle_protocol_line(line, self.writer)
 
         except Exception as exc:
-            # Если что-то пошло не так, печатаем ошибку в консоль
-            # и возвращаем HTTP 500.
             print(f"[ERROR] Failed to handle request: {exc}")
             self._send_text_response(500, f"error: {exc}\n")
             return
 
-        # Если все строки обработаны успешно — отвечаем ok.
         self._send_text_response(200, "ok\n")
 
 
 def main() -> None:
-    """
-    Основная функция программы.
-
-    Делает 5 вещей:
-
-    1. Читает параметры командной строки.
-    2. Создаёт SessionWriter.
-    3. Передаёт SessionWriter в HTTP handler.
-    4. Создаёт ThreadingHTTPServer.
-    5. Запускает бесконечный цикл ожидания HTTP-запросов.
-
-    Остановка:
-
-        Ctrl+C
-    """
-
-    # --------------------------------------------------------
-    # 1. Параметры командной строки
-    # --------------------------------------------------------
     parser = argparse.ArgumentParser(description="MotionBlocks HTTP Logger")
 
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Host to bind. Use 0.0.0.0 to accept requests from other devices in the network.",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="HTTP port",
-    )
-    parser.add_argument(
-        "--experiment-id",
-        required=True,
-        help="Experiment id, for example EXP01",
-    )
-    parser.add_argument(
-        "--device-id",
-        required=False,
-        default=None,
-        help="Device id, for example m5_001. If omitted, logger resolves device_id from DEVICE_INFO and devices.json.",
-    )
-    parser.add_argument(
-        "--base-dir",
-        default="data/raw",
-        help="Base directory for raw data",
-    )
-    parser.add_argument(
-        "--create-metadata",
-        action="store_true",
-        help="Create draft records in metadata JSON files",
-    )
-    parser.add_argument(
-        "--experiments-path",
-        default="data/metadata/experiments.json",
-        help="Path to experiments metadata JSON file",
-    )
-    parser.add_argument(
-        "--sessions-path",
-        default="data/metadata/recording_sessions.json",
-        help="Path to recording sessions metadata JSON file",
-    )
-    parser.add_argument(
-        "--devices-path",
-        default="data/metadata/devices.json",
-        help="Path to device registry JSON file",
-    )
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--experiment-id", required=True)
+    parser.add_argument("--device-id", required=False, default=None)
+    parser.add_argument("--base-dir", default="data/raw")
+    parser.add_argument("--create-metadata", action="store_true")
+    parser.add_argument("--experiments-path", default="data/metadata/experiments.json")
+    parser.add_argument("--sessions-path", default="data/metadata/recording_sessions.json")
+    parser.add_argument("--devices-path", default="data/metadata/devices.json")
 
     args = parser.parse_args()
 
-    # --------------------------------------------------------
-    # 2. Создаём объект записи данных
-    #
-    # Он будет заниматься CSV и metadata.
-    # HTTP-сервер будет только принимать строки и передавать их сюда.
-    # --------------------------------------------------------
     writer = SessionWriter(
         base_dir=Path(args.base_dir),
         experiment_id=args.experiment_id,
@@ -1174,38 +1107,13 @@ def main() -> None:
         devices_path=Path(args.devices_path),
     )
 
-    # --------------------------------------------------------
-    # 3. Передаём writer в HTTP handler
-    #
-    # BaseHTTPRequestHandler создаёт новый handler object
-    # на каждый запрос, поэтому напрямую передать writer в __init__
-    # неудобно.
-    #
-    # Простой вариант для нашего учебного logger:
-    # сохранить writer как class variable.
-    # --------------------------------------------------------
     MotionBlocksRequestHandler.writer = writer
 
-    # --------------------------------------------------------
-    # 4. Создаём HTTP-сервер
-    #
-    # ThreadingHTTPServer обрабатывает запросы в отдельных потоках.
-    # Для 10 Hz это с запасом.
-    #
-    # host:
-    #   127.0.0.1 — принимать только локальные запросы с этого ноутбука.
-    #   0.0.0.0   — принимать запросы с других устройств в сети.
-    #
-    # Для M5StickC нужен именно 0.0.0.0.
-    # --------------------------------------------------------
     server = ThreadingHTTPServer(
         (args.host, args.port),
         MotionBlocksRequestHandler,
     )
 
-    # --------------------------------------------------------
-    # 5. Печатаем параметры запуска
-    # --------------------------------------------------------
     print("MotionBlocks HTTP Logger")
     print(f"Host:            {args.host}")
     print(f"Port:            {args.port}")
@@ -1219,6 +1127,8 @@ def main() -> None:
     print(f"Experiments:     {args.experiments_path}")
     print(f"Sessions:        {args.sessions_path}")
     print()
+    print("recording_run_id will be assigned on first session open.")
+    print()
     print("Endpoints:")
     print(f"  GET  http://{args.host}:{args.port}/health")
     print(f"  POST http://{args.host}:{args.port}/line")
@@ -1231,13 +1141,6 @@ def main() -> None:
     print()
 
     try:
-        # ----------------------------------------------------
-        # Главный цикл HTTP-сервера.
-        #
-        # Эта строка блокирует выполнение программы.
-        # Программа будет ждать входящие HTTP-запросы,
-        # пока пользователь не нажмёт Ctrl+C.
-        # ----------------------------------------------------
         server.serve_forever()
 
     except KeyboardInterrupt:
@@ -1245,11 +1148,6 @@ def main() -> None:
         print("Stopping HTTP logger...")
 
     finally:
-        # ----------------------------------------------------
-        # Аккуратное завершение:
-        # - закрываем HTTP-сервер;
-        # - закрываем текущий CSV-файл.
-        # ----------------------------------------------------
         server.server_close()
         writer.close_session()
         print("HTTP logger stopped.")
