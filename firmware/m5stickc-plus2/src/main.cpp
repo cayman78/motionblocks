@@ -9,7 +9,7 @@
 
 
 // ============================================================
-// MotionBlocks — IMU logger v0.8.0
+// MotionBlocks — IMU logger v0.8.1
 //
 // Текущий этап:
 // - session-aware IMU logger;
@@ -66,7 +66,7 @@
 // Настройки записи
 // ------------------------------------------------------------
 
-static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.8.0";
+static const char* FIRMWARE_VERSION = "motionblocks.logger.v0.8.1";
 
 static const uint32_t SAMPLE_RATES_HZ[] = {5, 10, 25, 50, 100};
 static const uint8_t SAMPLE_RATE_COUNT = sizeof(SAMPLE_RATES_HZ) / sizeof(SAMPLE_RATES_HZ[0]);
@@ -673,8 +673,35 @@ void sendNewSessionEvent() {
 // ------------------------------------------------------------
 
 void drawWifiIndicator() {
-    uint16_t color = isWifiOk() ? MB_GREEN : MB_RED;
-    M5.Display.fillCircle(SCREEN_W - 10, 10, 6, color);
+    // Оставляем для совместимости — теперь не используется на REC экране,
+    // статус Wi-Fi показывается в верхней строке как текст.
+    // Функция вызывается из updateRecordingValues, но рисует пустоту.
+}
+
+
+// Верхняя строка статуса — одинакова на READY и REC экранах.
+// Формат: WiFi <IP>   RATE <N>Hz  <BAT>%
+void drawStatusBar() {
+    M5.Display.setTextSize(1);
+    M5.Display.setTextDatum(top_left);
+
+    // Wi-Fi статус / IP
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.drawString(getWifiStatusText(), MAIN_X, 4);
+
+    // RATE
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.drawString("RATE " + String(sample_rate_hz) + "Hz", 155, 4);
+
+    // Батарея — правый край
+    int bat = M5.Power.getBatteryLevel();
+    if (bat >= 0) {
+        uint16_t bat_color = bat > 20 ? MB_GREEN : MB_RED;
+        M5.Display.setTextColor(bat_color, MB_BLACK);
+        M5.Display.setTextDatum(top_right);
+        M5.Display.drawString(String(bat) + "%", SCREEN_W - 2, 4);
+        M5.Display.setTextDatum(top_left);
+    }
 }
 
 
@@ -691,31 +718,31 @@ void drawIdleScreen() {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
-    // Wi-Fi status / IP
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(MB_GREY, MB_BLACK);
-    M5.Display.drawString(getWifiStatusText(), MAIN_X, 4);
-    M5.Display.drawString("RATE " + String(sample_rate_hz) + "Hz", 160, 4);
+    // Верхняя строка: WiFi / Rate / Battery
+    drawStatusBar();
 
     // READY
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(MB_GREEN, MB_BLACK);
-    M5.Display.drawString("READY", MAIN_X, 22);
+    M5.Display.drawString("READY", MAIN_X, 18);
 
-    // SESSION
+    // SESSION  |  REC — в одну строку
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(MB_GREY, MB_BLACK);
+    M5.Display.drawString("SESSION", MAIN_X, 62);
+    M5.Display.drawString("REC", 150, 62);
+
+    // Номер сессии и номер следующей записи — крупнее
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.drawString("SESSION", MAIN_X, 66);
-
-    M5.Display.setTextSize(3);
-    M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.drawString(session_id, MAIN_X, 90);
+    M5.Display.drawString(session_id, MAIN_X, 74);
+    M5.Display.drawString(String(record_id), 150, 74);
 
     // Подсказки кнопок
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     M5.Display.drawString("A x2 START", MAIN_X, 122);
-    M5.Display.drawString("B NEXT", 150, 122);
+    M5.Display.drawString("B NEXT", 160, 122);
 }
 
 
@@ -728,18 +755,16 @@ void drawIdleScreen() {
 void updateRecordingValues(float acc_norm) {
     M5.Display.setTextDatum(top_left);
 
-    M5.Display.fillRect(MAIN_X, 70, SCREEN_W - MAIN_X, 48, MB_BLACK);
+    // Очищаем область метрик
+    M5.Display.fillRect(MAIN_X, 74, SCREEN_W - MAIN_X, 44, MB_BLACK);
 
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
-    M5.Display.drawString("SMP", MAIN_X, 74);
-    M5.Display.drawString(String(sample_count), 96, 74);
+    M5.Display.drawString("SMP", MAIN_X, 76);
+    M5.Display.drawString(String(sample_count), 96, 76);
 
-    M5.Display.drawString("ACC", MAIN_X, 98);
-    M5.Display.drawString(String(acc_norm, 2) + " g", 96, 98);
-
-    // Wi-Fi индикатор обновляем вместе с метриками
-    drawWifiIndicator();
+    M5.Display.drawString("ACC", MAIN_X, 100);
+    M5.Display.drawString(String(acc_norm, 2) + " g", 96, 100);
 }
 
 
@@ -756,19 +781,22 @@ void drawRecordingScreen(float acc_norm) {
     char session_id[8];
     getSessionId(session_id, sizeof(session_id));
 
+    // Верхняя строка: WiFi / Rate / Battery — как на READY
+    drawStatusBar();
+
     // REC + красный кружок
     M5.Display.setTextSize(3);
     M5.Display.setTextColor(MB_RED, MB_BLACK);
-    M5.Display.drawString("REC", MAIN_X, 6);
-    M5.Display.fillCircle(MAIN_X + 88, 24, 7, MB_RED);
+    M5.Display.drawString("REC", MAIN_X, 18);
+    M5.Display.fillCircle(MAIN_X + 72, 30, 7, MB_RED);
 
     // Session / record
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(MB_WHITE, MB_BLACK);
     String recordText = String(session_id) + " / R" + String(record_id);
-    M5.Display.drawString(recordText, MAIN_X, 44);
+    M5.Display.drawString(recordText, MAIN_X, 52);
 
-    // Метрики + Wi-Fi индикатор
+    // Метрики
     updateRecordingValues(acc_norm);
 
     // Подсказка кнопки

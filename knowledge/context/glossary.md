@@ -4,6 +4,17 @@
 
 The project laboratory / team brand.
 
+Short identifier: **100FNDZ** (читается как "100 friends"; 100 = Sto = Stofendez).
+
+Used as:
+
+```text
+Stofendez Lab   — official full name
+100FNDZ         — short identifier / hashtag / brand handle
+```
+
+The name originated as a rock band name invented by the project's child participant at age 3.
+
 ## MotionBlocks
 
 The main project.
@@ -1214,35 +1225,264 @@ optionally plot ax/ay/az and gx/gy/gz
 
 ## Analyze recordings tool
 
-Planned Python script for quick analysis of one CSV file or a whole experiment.
+Python script for quick analysis of one CSV file or a whole experiment.
 
-Possible future file:
+Current file:
 
 ```text
 tools/analyze_recordings.py
 ```
 
-Minimum purpose:
+Status: **working**.
+
+```powershell
+python tools/analyze_recordings.py --experiment EXP01
+python tools/analyze_recordings.py --file data\raw\EXP01\m5-01\run_A_session_A001_100Hz.csv
+python tools/analyze_recordings.py --all
+```
+
+Outputs:
 
 ```text
-calculate effective sample rate
-calculate dt_ms statistics
-detect gaps
-calculate basic acc_norm / gyro features
-save session_quality.csv
-save quick plots
+data/analysis/[experiment_id]/session_quality.csv
+data/analysis/[experiment_id]/plots/
 ```
+
+Calculates: effective sample rate, dt_ms statistics, gap detection, acc_norm / gyro_norm features, quality_status.
 
 ---
 
 ## Compute features tool
 
-Planned Python script for extracting features from raw CSV files.
+Python script for extracting features from raw CSV files using a sliding window approach.
 
-Possible future file:
+Current file:
 
 ```text
 tools/compute_features.py
 ```
 
-Should run after the first real mini-dataset is collected.
+Status: **working**.
+
+```powershell
+python tools/compute_features.py --experiment EXP01
+python tools/compute_features.py --experiment EXP01 --window-sec 2.0 --step-sec 0.5
+```
+
+Default parameters are loaded from `feature_config.json`. CLI arguments override defaults.
+
+Output:
+
+```text
+data/analysis/features/[experiment_id]/features.csv
+```
+
+Related: `feature_config.json`, `sliding window`, `features.csv`.
+
+---
+
+## feature_config.json
+
+JSON file storing default parameters for the sliding window feature extractor.
+
+Current path:
+
+```text
+data/metadata/feature_config.json
+```
+
+Current fields:
+
+```json
+{
+  "window_sec": 2.0,
+  "step_sec": 0.5,
+  "trim_start_sec": 1.0,
+  "trim_end_sec": 1.0,
+  "acc_norm_rest": 1.0,
+  "min_window_fill": 0.7
+}
+```
+
+All parameters can be overridden via CLI when running `compute_features.py`.
+
+Related: `compute_features.py`, `sliding window`.
+
+---
+
+## Sliding window
+
+A technique for extracting fixed-length segments from a time series with a configurable step.
+
+In MotionBlocks, used to convert raw IMU recordings into feature vectors for ML classification.
+
+Current parameters:
+
+```text
+window_sec  = 2.0s   (window size)
+step_sec    = 0.5s   (step — 75% overlap between windows)
+trim_start  = 1.0s   (trim recording start — button press artifact)
+trim_end    = 1.0s   (trim recording end — button press artifact)
+```
+
+One window = one row in `features.csv`.
+
+Overlap (75%) ensures that movement patterns are captured regardless of phase.
+
+Related: `compute_features.py`, `feature_config.json`, `Feature`.
+
+---
+
+## async HTTP transport
+
+Current wireless transport architecture introduced in firmware v0.8.0.
+
+Uses FreeRTOS to decouple IMU sampling from HTTP sending:
+
+```text
+Core 1 — loop() / IMU sampling (high priority, no HTTP blocking)
+Core 0 — task_http (low priority, sends batches independently)
+```
+
+Between them: FreeRTOS queue of 500 String* pointers.
+
+This architecture eliminated the critical defect where HTTP POST blocked IMU sampling,
+causing gaps of ~300ms every 25 samples at 100 Hz.
+
+Related: `FreeRTOS queue`, `HTTP batch mode`.
+
+---
+
+## FreeRTOS queue
+
+Inter-task communication mechanism used in async HTTP transport.
+
+In MotionBlocks: a queue of 500 String pointers between the IMU task (core 1)
+and the HTTP task (core 0).
+
+IMU puts protocol lines into the queue without waiting for HTTP.
+HTTP task reads from the queue and sends batches independently.
+
+If queue is full (network too slow), lines are dropped with a Serial warning.
+
+Related: `async HTTP transport`.
+
+---
+
+## firmware_2_classifier
+
+Planned second firmware variant with real-time movement classification on device.
+
+Goal:
+
+```text
+Deploy ML model to M5StickC Plus2 via Edge Impulse.
+Device classifies movement in real time and shows result on screen.
+Example: "walking" / "jumping" / "idle"
+```
+
+Status: planned after first complete dataset and scikit-learn baseline.
+
+Related: `Edge Impulse`, `firmware_3_guardian`.
+
+---
+
+## firmware_3_guardian
+
+Planned third firmware variant implementing wearable safety monitoring.
+
+Goal:
+
+```text
+Manual SOS button — press to trigger alert
+Automatic triggering — anomalous movement pattern detected
+Configurable threshold — tradeoff between Type I and Type II errors
+```
+
+Educational value: demonstrate Type I / Type II error concepts to children
+through a real working device.
+
+Status: planned after firmware_2_classifier.
+
+Related: `firmware_2_classifier`, `Guardian PoC`.
+
+---
+
+## Guardian PoC
+
+Proof of concept for wearable safety monitoring using movement anomaly detection.
+
+The Guardian PoC uses M5StickC Plus2 as the hardware platform.
+It is sufficient for demonstrating the concept, analysing error rates,
+and selecting optimal detection thresholds.
+
+Not intended as a production medical device.
+
+Intended as: educational demonstration, scientific project, competition entry.
+
+Related: `firmware_3_guardian`, `EWS`.
+
+---
+
+## EWS (Early Warning System)
+
+Medical concept: a system that continuously monitors patient vitals
+and raises an alert when the score exceeds a threshold.
+
+Standard manual version: NEWS2 (National Early Warning Score) —
+nurse manually measures pulse, blood pressure, temperature, respiratory rate
+every few hours and calculates a score.
+
+MotionBlocks long-term vision: continuous automated EWS using wearable sensors,
+detecting pre-critical states hours before clinical deterioration.
+
+Planned sensor set:
+
+```text
+IMU         → movement activity, gait, agitation (exists)
+MAX30102    → pulse (HR), SpO2 (planned)
+Temperature → skin temperature proxy (planned)
+```
+
+Related: `Guardian PoC`, `firmware_3_guardian`.
+
+---
+
+## Orange Data Mining
+
+Open-source visual ML tool used for first classification experiments.
+
+Download: https://orangedatamining.com
+
+Used in MotionBlocks for:
+
+```text
+loading features.csv
+training Random Forest / kNN classifiers
+evaluating with cross-validation (Test and Score widget)
+visualizing Confusion Matrix
+running Predictions on new unlabelled data
+```
+
+First experiment result (EXP14): CA = 99.5%, Random Forest, 5-fold CV.
+
+Not for production use — for educational exploration and rapid prototyping.
+
+Related: `compute_features.py`, `features.csv`, `scikit-learn`.
+
+---
+
+## 100FNDZ
+
+Short brand identifier for Stofendez Lab.
+
+Origin: "100" = "Sto" (Russian prefix for Stofendez), reads as "100 friends".
+
+Usage:
+
+```text
+Stofendez Lab   — official name for documents and papers
+100FNDZ         — hashtag, handle, short identifier
+```
+
+Related: `Stofendez Lab`.

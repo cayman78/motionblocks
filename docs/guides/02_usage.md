@@ -11,11 +11,13 @@
 ```
 M5StickC Plus2
   → Wi-Fi
-  → http_logger.py      (приём данных, запись CSV)
-  → data/raw/           (сырые данные)
-  → motion_browser.py   (просмотр и редактирование метаданных)
-  → analyze_recordings.py (анализ качества и графики)
-  → data/analysis/      (результаты анализа)
+  → http_logger.py         (приём данных, запись CSV)
+  → data/raw/              (сырые данные)
+  → motion_browser.py      (просмотр и редактирование метаданных)
+  → analyze_recordings.py  (анализ качества и графики)
+  → compute_features.py    (извлечение фич, скользящее окно)
+  → data/analysis/         (результаты анализа и фичи)
+  → Orange Data Mining     (обучение классификатора)
 ```
 
 ---
@@ -160,10 +162,18 @@ data/
 │       └── m5-01/
 │           └── run_A_session_A001_100Hz.csv   ← сырые данные
 │
-└── metadata/
-    ├── experiments.json        ← описание экспериментов
-    ├── recording_sessions.json ← описание сессий
-    └── devices.json            ← реестр устройств
+├── metadata/
+│   ├── experiments.json        ← описание экспериментов
+│   ├── recording_sessions.json ← описание сессий
+│   ├── devices.json            ← реестр устройств
+│   └── feature_config.json     ← параметры окна для compute_features
+│
+└── analysis/
+    └── EXP01/
+        ├── session_quality.csv     ← метрики качества
+        ├── plots/                  ← графики acc_norm и dt_ms
+        └── features/
+            └── features.csv        ← фичи для ML
 ```
 
 **Имя файла** кодирует всю необходимую идентификацию:
@@ -276,6 +286,121 @@ data/
 
 ---
 
+## 7. Извлечение фич для ML
+
+После того как данные проверены (`analyze_recordings.py` показал `✅ OK`) и метаданные заполнены (`movement_type` в motion_browser.py), можно извлечь фичи для обучения модели.
+
+### 7.1 Заполни movement_type
+
+Перед запуском убедись что в motion_browser.py у каждой сессии заполнен `movement_type`. Скрипт пропускает сессии со значением `unknown`.
+
+### 7.2 Запусти compute_features.py
+
+```powershell
+python tools/compute_features.py --experiment EXP01
+```
+
+Скрипт нарежет каждую запись скользящим окном и посчитает фичи:
+
+```
+Параметры: окно=2.0s  шаг=0.5s  обрезка=1.0s+1.0s
+
+Эксперимент: EXP01  (9 сессий)
+  EXP01_m5-01_A_A001  [walking]  → 47 окон
+  EXP01_m5-01_A_A002  [running]  → 31 окно
+  ...
+
+  Всего окон: 570
+  По классам:
+    walking: 252
+    running:  99
+    ...
+
+  Сохранено: data\analysis\features\EXP01\features.csv
+```
+
+### 7.3 Параметры окна
+
+Параметры по умолчанию хранятся в `data/metadata/feature_config.json`. Любой параметр можно переопределить через CLI:
+
+```powershell
+# Изменить размер и шаг окна
+python tools/compute_features.py --experiment EXP01 --window-sec 1.0 --step-sec 0.25
+
+# Изменить уровень покоя для zero-crossing
+python tools/compute_features.py --experiment EXP01 --acc-norm-rest 1.05
+```
+
+---
+
+## 8. Обучение классификатора в Orange Data Mining
+
+### 8.1 Открыть данные
+
+- Запусти Orange
+- Создай новый проект: **New**
+- Перетащи виджет **File** (раздел Data) на canvas
+- Двойной клик → выбери `data/analysis/features/EXP01/features.csv`
+
+### 8.2 Настроить роли колонок
+
+В виджете File в колонке **Role**:
+
+| Колонки | Role |
+|---|---|
+| `movement_type` | **target** |
+| `experiment_id`, `device_id`, `session_uid`, `recording_run_id`, `device_session_id`, `record_id`, `window_idx`, `window_start_ms`, `window_end_ms`, `sample_count`, `sample_rate_hz`, `movement_label`, `subject_id` | **meta** |
+| Все числовые фичи (`acc_norm_mean` и далее) | **feature** (оставить как есть) |
+
+Нажми **Apply**.
+
+### 8.3 Собрать pipeline для обучения
+
+Перетащи на canvas:
+
+- **Random Forest** (раздел Model)
+- **Test and Score** (раздел Evaluate)
+
+Соедини:
+
+```
+File → Random Forest → Test and Score
+File → Test and Score
+```
+
+Двойной клик на **Test and Score** → метод **Cross Validation**, folds: **5** → смотри колонку **CA** (Classification Accuracy).
+
+### 8.4 Confusion Matrix
+
+Добавь виджет **Confusion Matrix** (раздел Evaluate):
+
+```
+Test and Score → Confusion Matrix
+```
+
+Двойной клик → матрица показывает где модель ошибается по классам.
+
+### 8.5 Предсказание на новых данных
+
+Для предсказания на записях без разметки (новый субъект или новая сессия):
+
+1. Запусти `compute_features.py` для нового эксперимента (EXP15)
+2. Добавь второй виджет **File** → загрузи `features/EXP15/features.csv`
+3. В этом File: `movement_type` → **meta** (не target)
+4. Добавь виджет **Predictions** (раздел Evaluate)
+5. Соедини:
+
+```
+Random Forest  → Predictions
+File (EXP15)   → Predictions
+```
+
+Двойной клик на **Predictions** → таблица с предсказанным `movement_type` для каждого окна.
+
+Колонка `time_from_record_start_sec` показывает в какой момент записи находится каждое окно.
+
+---
+
 ## Типичный рабочий сеанс
 
 ```powershell
@@ -292,9 +417,14 @@ python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --d
 # 4. Открыть второй терминал, активировать окружение
 .\.venv\Scripts\Activate.ps1
 
-# 5. Запустить браузер для просмотра и заполнения метаданных
+# 5. Запустить браузер — заполнить movement_type для каждой сессии
 streamlit run tools/motion_browser.py
 
-# 6. Запустить анализ
+# 6. Проверить качество данных
 python tools/analyze_recordings.py --experiment EXP01
+
+# 7. Извлечь фичи для ML
+python tools/compute_features.py --experiment EXP01
+
+# 8. Открыть Orange Data Mining → загрузить features.csv → обучить модель
 ```

@@ -196,3 +196,19 @@ cd C:\путь\к\motionblocks
 ```
 
 После этого можно запускать Python-инструменты проекта.
+
+---
+
+## 10. Orange Data Mining (для ML экспериментов)
+
+Orange — визуальный инструмент для машинного обучения без кода.
+
+Скачай и установи: **https://orangedatamining.com/download/**
+
+Выбери **Windows installer** (.exe). Python встроен, отдельная установка не нужна.
+
+Orange используется для:
+- обучения классификаторов на `features.csv`
+- оценки качества модели (Test and Score)
+- визуализации Confusion Matrix
+- предсказания на новых данных (Predictions)

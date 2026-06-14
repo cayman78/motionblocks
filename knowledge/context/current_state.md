@@ -15,13 +15,16 @@ Stage 6 — Async HTTP transport, чистые данные, анализ кач
 Текущий рабочий pipeline:
 
 ```text
-M5StickC Plus2 (v0.8.0)
+M5StickC Plus2 (v0.8.1)
   → Wi-Fi
   → HTTP POST /line (async, FreeRTOS queue, ядро 0)
   → tools/http_logger.py
   → run_A_session_A001_100Hz.csv
   → tools/analyze_recordings.py
   → data/analysis/EXP__/session_quality.csv + plots
+  → tools/compute_features.py
+  → data/analysis/features/EXP__/features.csv
+  → Orange Data Mining / scikit-learn
 ```
 
 Предыдущий USB Serial pipeline остаётся для отладки.
@@ -30,7 +33,7 @@ M5StickC Plus2 (v0.8.0)
 
 ## Project identity
 
-* Laboratory / team: **Stofendez Lab**
+* Laboratory / team: **Stofendez Lab** (100FNDZ)
 * Project: **MotionBlocks**
 * Future technology layer: **MotionLink**
 
@@ -49,13 +52,13 @@ M5StickC Plus2
 Current working firmware:
 
 ```text
-motionblocks.logger.v0.8.0 — async HTTP via FreeRTOS + selectable sampling rate
+motionblocks.logger.v0.8.1 — async HTTP via FreeRTOS + selectable sampling rate + battery indicator
 ```
 
 Current active branch:
 
 ```text
-feature/async-http
+feature/ml-pipeline
 ```
 
 Current firmware capabilities:
@@ -77,8 +80,9 @@ Current firmware capabilities:
 * показывает Wi-Fi статус / IP на READY экране;
 * показывает выбранную частоту на READY экране;
 * показывает текущие метрики записи на REC экране;
-* показывает Wi-Fi индикатор (зелёная/красная точка) на REC экране;
-* показывает SAVED экран 1.2s после остановки записи.
+* shows Wi-Fi status text + RATE + battery % on status bar (top line, both screens);
+* shows SESSION and NEXT REC number on READY screen;
+* shows SAVED экран 1.2s после остановки записи.
 
 Confirmed behavior:
 
@@ -609,42 +613,33 @@ feature/async-http
 
 ## Current next actions
 
-### 1. Закоммитить текущую ветку feature/async-http
+### 1. Собрать расширенный датасет
 
 ```text
-firmware v0.8.0
-tools/analyze_recordings.py
-docs/guides/01_setup.md
-docs/guides/02_usage.md
-knowledge/sessions/2026-06-14_...session.md
-knowledge/takeaways/2026-06-14_...takeaways.md
+— несколько субъектов (минимум 2-3)
+— классы: idle, walking, running, jumping,
+  squats, stairs_up/down, shake, fall-like
+— 10+ записей на класс на субъекта
 ```
 
-### 2. Собрать первый чистый датасет движений
+### 2. FFT фичи в compute_features.py
 
-Целевые классы:
+Частотные характеристики для ритмических движений.
+Улучшит разделение walking / running / jumping.
 
-```text
-idle
-walking
-jumping
-shake
-stairs_up / stairs_down
-```
+### 3. scikit-learn baseline
 
-Несколько субъектов, несколько записей на класс. Использовать motion_browser.py для заполнения метаданных сразу после записи.
+Воспроизводимая модель в коде. Сравнение алгоритмов.
+Сохранение модели (.pkl).
 
-### 3. Запустить анализ датасета
+### 4. Edge Impulse — firmware_2_classifier
 
-```powershell
-python tools/analyze_recordings.py --experiment EXP__
-```
+Задеплоить модель на устройство. Real-time классификация на экране.
 
-Убедиться что все файлы получили статус `OK`.
+### 5. Guardian PoC — firmware_3_guardian
 
-### 4. Первый ML эксперимент
-
-Orange Data Mining или scikit-learn на features.csv.
+Тревожная кнопка + автосрабатывание при аномальных движениях.
+Анализ ошибок 1/2 рода с детьми. Выбор порога специфичности.
 
 ---
 
@@ -680,6 +675,25 @@ streamlit run tools/motion_browser.py
 
 Modes: 🗂 Обзор / 📈 Просмотр / ✏️ Редактор.
 
+Редактор: свободный ввод movement_type (text + подсказки),
+удаление отдельных записей из CSV по record_id.
+
+### tools/compute_features.py
+
+Status: **working**.
+
+```powershell
+python tools/compute_features.py --experiment EXP14
+python tools/compute_features.py --experiment EXP14 --window-sec 2.0 --step-sec 0.5
+```
+
+Параметры окна по умолчанию из `data/metadata/feature_config.json`.
+CLI аргументы переопределяют дефолты.
+
+Output: `data/analysis/features/[experiment_id]/features.csv`
+
+Первый эксперимент EXP14: CA = 99.5% в Orange Data Mining (Random Forest, 5-fold CV).
+
 ---
 
 ## Known Issues / Limitations
@@ -704,13 +718,24 @@ Modes: 🗂 Обзор / 📈 Просмотр / ✏️ Редактор.
 * Should events and DATA rows live in the same CSV, or should event logs be separated later?
 * Should `device_id` ever be stored in firmware, or always resolved by the logger?
 * When should SQLite be introduced?
-* Which first ML demo should be used with children: Edge Impulse, Orange Data Mining, or local scikit-learn?
 
 ---
 
 ## Recent Changes
 
-### 2026-06-14
+### 2026-06-14 (вечер)
+
+* Firmware v0.8.1: батарея на READY и REC экранах, NEXT REC на READY,
+  единая `drawStatusBar()`, убран зелёный кружок Wi-Fi с REC.
+* `tools/compute_features.py` создан — скользящее окно 2s/0.5s,
+  параметры из `data/metadata/feature_config.json`.
+* Первый ML эксперимент: Orange Data Mining, CA = 99.5%, Random Forest.
+* `tools/motion_browser.py` — удаление записей из CSV, свободный ввод movement_type.
+* Branding: 100FNDZ как короткий идентификатор Stofendez Lab.
+* Ветка: `feature/async-http` → `feature/ml-pipeline`.
+* Phase transition: от сбора данных → к ML pipeline.
+
+### 2026-06-14 (утро)
 
 * Обнаружен и исправлен критический дефект: HTTP POST блокировал IMU опрос → `effective_hz ≈ 48 Hz` при gaps ~300ms.
 * Firmware v0.8.0: async HTTP через FreeRTOS. `task_http` на ядре 0, `loop()` на ядре 1.

@@ -1,13 +1,24 @@
 ---
-Version: 0.2
+Version: 0.3
 Status: Active
 Created: 2026-06-13
-Last Updated: 2026-06-13
+Last Updated: 2026-06-14
 ---
 
 # MotionBlocks — Project Brief
 
 ## What's New
+
+### 0.3 (2026-06-14)
+
+- Added 100FNDZ as short brand identifier for Stofendez Lab.
+- Updated Current Stage to reflect async HTTP transport, ML pipeline, and first classifier result.
+- Extended Architecture / Pipeline to include ML layer (compute_features → features.csv → classifier).
+- Extended Long-Term Vision: Guardian PoC, суточный мониторинг, медицинский EWS.
+- Updated Current Next Step: датасет → FFT → scikit-learn → Edge Impulse → Guardian PoC.
+- Cleaned Open Questions: removed resolved questions.
+- Updated Future Ideas: removed implemented items, added Guardian / monitoring / medical.
+- Added new Design Principle: optimize by changing the transaction model, not by micro-optimizing the wrong model.
 
 ### 0.2 (2026-06-13)
 
@@ -29,7 +40,7 @@ Last Updated: 2026-06-13
 
 ## Project
 
-MotionBlocks is a wearable motion intelligence project by Stofendez Lab.
+MotionBlocks is a wearable motion intelligence project by Stofendez Lab (100FNDZ).
 
 The project explores how a small wearable device can collect, store, describe, analyze, and later classify human motion patterns.
 
@@ -101,23 +112,41 @@ MotionBlocks may become a personal motion domain inside a broader Human-by-Wire 
 
 In this vision, a person has a structured motion data layer that can be connected to external systems through a future integration layer called **MotionLink**.
 
-Possible future connections:
+**Near-term vision — Guardian:**
+
+A wearable device that detects anomalous movement patterns and triggers alerts.
+Combines manual SOS button with automatic detection of fall-like or unusual events.
+Demonstrates Type I / Type II error tradeoffs and threshold selection to children.
+
+**Medium-term vision — daily pattern monitoring:**
+
+Not just event detection but continuous profiling of a person's daily rhythm.
+The system learns what "normal" looks like for this specific person and flags deviations:
+unusual wake time, slower gait than usual, missed meal pattern, night-time activity.
+Analogy: anti-fraud systems that detect anomalies in personal behavior patterns.
+
+**Long-term vision — medical early warning:**
+
+Continuous automated EWS (Early Warning System) as an alternative to manual NEWS2 scoring.
+Additional sensors: MAX30102 (pulse/SpO2), skin temperature, respiratory rate from IMU.
+Predicts pre-critical states hours before clinical deterioration.
+Target applications: hospital ward monitoring, home care, elderly independence support.
+
+**Integration and product path:**
 
 ```text
-family dashboard
-caregiver dashboard
-medical dashboard
-personal analytics
-Human-by-Wire domains
+MotionLink integration layer
+family / caregiver / medical dashboard
+custom wearable hardware (accessibility design for elderly)
+production via JLCPCB for small series
 ```
-
-MotionLink is the future communication and integration concept for connecting the personal motion domain to external dashboards and services.
 
 The long-term direction is:
 
 ```text
 from raw wearable motion data
 to understandable personal motion intelligence
+to real-time safety and health monitoring
 ```
 
 ---
@@ -127,7 +156,7 @@ to understandable personal motion intelligence
 Current stage:
 
 ```text
-wireless motion logging with selectable sampling rates and HTTP batch transport
+ML pipeline — feature extraction, first classifier, Guardian PoC preparation
 ```
 
 Completed earlier stages:
@@ -135,40 +164,31 @@ Completed earlier stages:
 ```text
 repository setup
 M5StickC Plus2 firmware bring-up
-IMU reading
-acc_norm calculation
+IMU reading and acc_norm calculation
 button-controlled recording
 session-aware logging
 Python Serial logger
 draft metadata generation
 device display layout
-Python HTTP logger
-Wi-Fi firmware output
+Python HTTP logger and Wi-Fi firmware output
 DEVICE_INFO event and MAC-based device resolution
-selectable sampling rate
-HTTP batch mode for higher-rate wireless logging
+selectable sampling rate (5 / 10 / 25 / 50 / 100 Hz)
+recording_run_id and safe file names
+async HTTP transport via FreeRTOS (firmware v0.8.x)
+analyze_recordings.py — quality metrics and plots
+motion_browser.py — session viewer and metadata editor
+compute_features.py — sliding window feature extraction
+first ML experiment: Orange Data Mining, CA = 99.5%
 ```
 
 Current confirmed capability:
 
 ```text
-M5StickC Plus2 can record IMU data wirelessly over Wi-Fi.
-The device can select 5 / 10 / 25 / 50 / 100 Hz at startup.
-HTTP batch mode works in the current tests, including 100 Hz.
-```
-
-Important experimental result:
-
-```text
-one sample = one HTTP POST
-```
-
-is not suitable for higher-rate recording.
-
-Current wireless mode therefore uses:
-
-```text
-HTTP batch mode during recording
+M5StickC Plus2 records clean IMU data at 100 Hz over Wi-Fi.
+effective_hz = 100.0 Hz, gaps = 0 (confirmed EXP13, EXP14).
+Sliding window features extracted and classified in Orange.
+First real dataset collected (EXP14): walking, running, jumping,
+squats, idle, petting-the-cat and other classes.
 ```
 
 ---
@@ -183,8 +203,10 @@ M5StickC Plus2
   -> Python logger
   -> raw CSV files
   -> JSON metadata
-  -> analysis tools
-  -> future browser / viewer
+  -> analyze_recordings.py (quality metrics, plots)
+  -> compute_features.py (sliding window features)
+  -> features.csv
+  -> classifier (Orange / scikit-learn / Edge Impulse)
 ```
 
 Current wireless pipeline:
@@ -677,42 +699,15 @@ effective_sample_rate_hz -> measured rate from timestamps
 
 ## Current Next Step
 
-Immediate next branch:
-
 ```text
-feature/recording-runs-and-safe-file-names
+1. Collect expanded dataset — multiple subjects, 10+ recordings per class
+2. Add FFT features to compute_features.py
+3. scikit-learn baseline — reproducible model in code
+4. Edge Impulse — firmware_2_classifier, real-time on device
+5. Guardian PoC — firmware_3_guardian, anomaly detection + alert
 ```
 
-Goal:
-
-```text
-introduce logger-side recording_run_id and safer file names
-```
-
-Expected result:
-
-```text
-repeated device resets do not overwrite or mix old files
-A001 can repeat safely
-different sample rates produce separate identifiable files
-metadata records can reference unique recording runs
-```
-
-After that, planned quick-win work:
-
-```text
-feature/quick-analysis-tools
-```
-
-Expected focus:
-
-```text
-analyze generated CSV files
-calculate effective sample rate
-detect gaps and suspicious intervals
-generate simple plots
-produce features.csv for Orange / scikit-learn / Edge Impulse experiments
-```
+Details in `current_state.md`.
 
 ---
 
@@ -724,6 +719,7 @@ Current project principles:
 Keep the device simple.
 Keep the protocol stable.
 Keep transport replaceable.
+Optimize by changing the transaction model, not by micro-optimizing the wrong model.
 Preserve Serial output for debugging.
 Use readable CSV for raw data.
 Use readable JSON for metadata.
@@ -744,56 +740,57 @@ Keep the architecture compatible with future FDAM / Human-by-Wire ideas.
 
 ## Open Questions
 
-Current important open questions:
-
 ```text
-What exact recording_run_id format should be used?
-Should safe file names include sample_rate_hz, date, or both?
-Where should effective_sample_rate_hz be stored?
-Should loggers update records_actual automatically after STOP?
-How should quick analysis outputs be organized under data/analysis?
-When should a Streamlit metadata browser be introduced?
-When should metadata editing be added?
-When should JSON metadata move to SQLite?
-What is the practical battery life in Wi-Fi batch mode?
-How stable is 100 Hz during longer real wearable sessions?
+Should records_actual be updated by the logger after STOP?
+Should metadata contain transport information (http_batch, serial, batch parameters)?
+Should channels be repeated in each recording session or moved to a shared schema?
+Should events and DATA rows live in the same CSV, or should event logs be separated later?
+Should device_id ever be stored in firmware, or always resolved by the logger?
+When should SQLite be introduced?
+Which Android / Watch hardware is best for daily monitoring phase?
+When should MAX30102 (pulse/SpO2) be added as next sensor?
 ```
 
 ---
 
 ## Future Ideas
 
-Near-term analysis ideas:
+Near-term:
 
 ```text
-session quality report
-acc_norm plots
-dt_ms plots
-feature extraction per recording
-features.csv for Orange Data Mining
-baseline scikit-learn classifier
-Edge Impulse demonstration
+Guardian PoC — firmware_3_guardian
+  anomaly detection, SOS button, Type I/II error demo with children
+
+scikit-learn baseline
+  reproducible classifier in code, model persistence
+
+Edge Impulse
+  deploy model to device, real-time movement classification on screen
+
+FFT features
+  frequency-domain features for better rhythm detection
 ```
 
-Possible first movement classes:
+Medium-term:
 
 ```text
-idle
-walking
-shake
-impact-like event
-jump
-sit-to-stand
+daily pattern profiling
+  personal baseline, deviation detection, anomaly score
+
+additional sensors
+  MAX30102 (pulse, SpO2) via Grove
+  skin temperature
+
+Android / Samsung Watch
+  continuous monitoring platform for daily rhythm analysis
 ```
 
-Longer-term ideas:
+Long-term:
 
 ```text
-motion library
-movement similarity search
-fall-like event detection
-anomaly detection
-family dashboard
-caregiver dashboard
+medical EWS — continuous early warning system
+custom wearable hardware (accessibility design for elderly)
 MotionLink integration layer
+LLM agent for pattern interpretation and risk assessment
+family / caregiver / medical dashboard
 ```

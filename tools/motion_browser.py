@@ -472,16 +472,20 @@ def page_editor():
     col1, col2 = st.columns(2)
 
     with col1:
-        # movement_type
+        # movement_type — свободный ввод + подсказки из списка
         mt_current = session.get("movement_type", "unknown")
-        mt_options = MOVEMENT_TYPE_OPTIONS.copy()
-        if mt_current not in mt_options:
-            mt_options.insert(0, mt_current)
-        new_movement_type = st.selectbox(
+        new_movement_type = st.text_input(
             "movement_type",
-            mt_options,
-            index=mt_options.index(mt_current),
+            value=mt_current,
+            help="Введи вручную или выбери из подсказок ниже",
         )
+        mt_suggestion = st.selectbox(
+            "Подсказки movement_type",
+            ["— выбрать из списка —"] + MOVEMENT_TYPE_OPTIONS,
+            key="mt_suggestion",
+        )
+        if mt_suggestion != "— выбрать из списка —":
+            new_movement_type = mt_suggestion
 
         # movement_label
         new_movement_label = st.text_input(
@@ -563,6 +567,77 @@ def page_editor():
                 reload_all()
                 st.success(f"Сессия {uid} удалена.")
                 st.rerun()
+
+    # --- Удаление отдельных записей из CSV ---
+    st.divider()
+    st.subheader("Удалить записи из CSV")
+
+    file_path = Path(session.get("file_path", ""))
+    if not file_path.exists():
+        st.warning(f"CSV файл не найден: {file_path}")
+    else:
+        csv_df = pd.read_csv(file_path)
+        data_rows = csv_df[csv_df["row_type"] == "DATA"].copy() \
+            if "row_type" in csv_df.columns else csv_df.copy()
+        data_rows["record_id"] = pd.to_numeric(
+            data_rows.get("record_id", pd.Series(dtype=float)), errors="coerce"
+        )
+
+        if "record_id" not in data_rows.columns or data_rows["record_id"].isna().all():
+            st.info("Нет record_id в файле.")
+        else:
+            record_ids = sorted(data_rows["record_id"].dropna().unique())
+
+            # Таблица записей с количеством сэмплов
+            record_info = []
+            for rid in record_ids:
+                n = (data_rows["record_id"] == rid).sum()
+                record_info.append({"record_id": int(rid), "сэмплов": n})
+            st.dataframe(pd.DataFrame(record_info), use_container_width=True,
+                         hide_index=True)
+
+            records_to_delete = st.multiselect(
+                "Выбери record_id для удаления",
+                options=[int(r) for r in record_ids],
+                help="Можно выбрать несколько. Строки будут удалены из CSV."
+            )
+
+            if records_to_delete:
+                st.warning(
+                    f"Будут удалены записи {records_to_delete} "
+                    f"из {file_path.name}"
+                )
+                if st.button("🗑 Удалить выбранные записи", type="primary",
+                             key="del_records_btn"):
+                    # Удаляем DATA строки выбранных записей
+                    # EVENT строки (START/STOP) для этих record_id тоже удаляем
+                    if "row_type" in csv_df.columns and "record_id" in csv_df.columns:
+                        csv_df["record_id_num"] = pd.to_numeric(
+                            csv_df["record_id"], errors="coerce"
+                        )
+                        mask_delete = (
+                            csv_df["record_id_num"].isin(records_to_delete)
+                        )
+                        csv_cleaned = csv_df[~mask_delete].drop(
+                            columns=["record_id_num"]
+                        )
+                    else:
+                        csv_df["record_id_num"] = pd.to_numeric(
+                            csv_df.get("record_id", pd.Series(dtype=float)),
+                            errors="coerce"
+                        )
+                        mask_delete = csv_df["record_id_num"].isin(records_to_delete)
+                        csv_cleaned = csv_df[~mask_delete].drop(
+                            columns=["record_id_num"]
+                        )
+
+                    csv_cleaned.to_csv(file_path, index=False, encoding="utf-8")
+                    reload_all()
+                    st.success(
+                        f"Записи {records_to_delete} удалены. "
+                        f"Осталось строк: {len(csv_cleaned)}"
+                    )
+                    st.rerun()
 
 
 # ------------------------------------------------------------

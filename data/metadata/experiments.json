@@ -213,5 +213,73 @@
     "comments": "",
     "status": "draft",
     "tags": []
+  },
+  {
+    "experiment_id": "EXP14",
+    "short_name": "EXP14",
+    "title": "Сбор первого датасета - 14 июня",
+    "started_at": "2026-06-14T12:04:27",
+    "ended_at": null,
+    "location": "Назарьево",
+    "environment": "indoor",
+    "goal": "",
+    "participants": [
+      "child_01"
+    ],
+    "operator_id": "unknown",
+    "device_ids": [
+      "m5-01"
+    ],
+    "default_device_position": "unknown",
+    "default_wrist": null,
+    "default_sample_rate_hz": 10,
+    "protocol": "Button-controlled recording. Button A starts/stops records. Button B switches to next session.",
+    "comments": "",
+    "status": "draft",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP15",
+    "short_name": "unknown",
+    "title": "unknown",
+    "started_at": "2026-06-14T13:25:27",
+    "ended_at": null,
+    "location": "unknown",
+    "environment": "unknown",
+    "goal": "",
+    "participants": [],
+    "operator_id": "unknown",
+    "device_ids": [
+      "m5-01"
+    ],
+    "default_device_position": "unknown",
+    "default_wrist": null,
+    "default_sample_rate_hz": 10,
+    "protocol": "Button-controlled recording. Button A starts/stops records. Button B switches to next session.",
+    "comments": "",
+    "status": "draft",
+    "tags": []
+  },
+  {
+    "experiment_id": "EXP16",
+    "short_name": "unknown",
+    "title": "unknown",
+    "started_at": "2026-06-14T15:04:54",
+    "ended_at": null,
+    "location": "unknown",
+    "environment": "unknown",
+    "goal": "",
+    "participants": [],
+    "operator_id": "unknown",
+    "device_ids": [
+      "m5-01"
+    ],
+    "default_device_position": "unknown",
+    "default_wrist": null,
+    "default_sample_rate_hz": 10,
+    "protocol": "Button-controlled recording. Button A starts/stops records. Button B switches to next session.",
+    "comments": "",
+    "status": "draft",
+    "tags": []
   }
 ]
