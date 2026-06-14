@@ -2,34 +2,29 @@
 
 ## Date
 
-2026-06-13 (updated end of day)
+2026-06-14
 
 ## Current project phase
 
-Stage 5 — Safe data collection with recording_run_id and firmware UX improvements.
+Stage 6 — Async HTTP transport, чистые данные, анализ качества.
 
-The project has completed wireless HTTP batch logging, device identity, selectable sampling rate, recording_run_id implementation, safe file names, and firmware UX improvements.
+Проект завершил wireless HTTP batch logging, device identity, selectable sampling rate, recording_run_id, safe file names, metadata v2, motion browser, analyze_recordings и async HTTP через FreeRTOS.
 
-The current working pipeline is:
+Первый датасет с подтверждённым качеством (EXP13): `effective_hz = 100.0 Hz`, `gaps = 0`.
+
+Текущий рабочий pipeline:
 
 ```text
-M5StickC Plus2 (v0.7.0)
+M5StickC Plus2 (v0.8.0)
   → Wi-Fi
-  → HTTP POST /line
-  → one-line service events + batched DATA during recording
+  → HTTP POST /line (async, FreeRTOS queue, ядро 0)
   → tools/http_logger.py
   → run_A_session_A001_100Hz.csv
-  → draft metadata with recording_run_id
+  → tools/analyze_recordings.py
+  → data/analysis/EXP__/session_quality.csv + plots
 ```
 
-The previous USB Serial pipeline still exists and remains useful for debugging and fallback.
-
-Current immediate goal:
-
-```text
-update serial_logger.py with recording_run_id and safe file names
-then build tools/analyze_recordings.py
-```
+Предыдущий USB Serial pipeline остаётся для отладки.
 
 ---
 
@@ -54,13 +49,13 @@ M5StickC Plus2
 Current working firmware:
 
 ```text
-motionblocks.logger.v0.7.0 — selectable sampling rate + HTTP batch + UX improvements
+motionblocks.logger.v0.8.0 — async HTTP via FreeRTOS + selectable sampling rate
 ```
 
 Current active branch:
 
 ```text
-main (feature/recording-runs-and-safe-file-names merged)
+feature/async-http
 ```
 
 Current firmware capabilities:
@@ -72,16 +67,18 @@ Current firmware capabilities:
 * reports technical device identity through `EVENT,DEVICE_INFO`;
 * supports sampling-rate selection at startup;
 * reports selected rate through `EVENT,SAMPLE_RATE`;
-* sends the same protocol lines through Serial and HTTP;
+* sends protocol through Serial (immediate) and HTTP (async queue);
 * connects to Wi-Fi using local `wifi_config.h`;
-* uses HTTP batch mode for `DATA` rows during recording;
-* keeps Serial output immediate for debugging;
-* shows a startup splash screen;
-* shows Wi-Fi status / IP address on the READY screen;
-* shows selected sample rate on the READY screen;
-* shows current record metrics on the REC screen;
-* shows Wi-Fi indicator (green/red dot) on the REC screen;
-* shows SAVED screen with sample count after stopping a record.
+* HTTP задача работает на ядре 0, `loop()` и IMU на ядре 1 — без взаимной блокировки;
+* FreeRTOS очередь 500 строк буферизует DATA между IMU и HTTP задачами;
+* батч 20 DATA строк или 200ms, свежий HTTPClient на каждый батч;
+* задержка 500ms между SAMPLE_RATE и NEW_SESSION — корректное имя файла;
+* показывает стартовый splash screen;
+* показывает Wi-Fi статус / IP на READY экране;
+* показывает выбранную частоту на READY экране;
+* показывает текущие метрики записи на REC экране;
+* показывает Wi-Fi индикатор (зелёная/красная точка) на REC экране;
+* показывает SAVED экран 1.2s после остановки записи.
 
 Confirmed behavior:
 
@@ -92,12 +89,7 @@ Confirmed behavior:
 * `record_id` resets to `1` when session changes.
 * `sample_id` increments inside each record.
 * IMU data is sampled only while recording.
-* `acc_norm` is calculated as:
-
-```text
-sqrt(ax*ax + ay*ay + az*az)
-```
-
+* `acc_norm` is calculated as `sqrt(ax*ax + ay*ay + az*az)`.
 * In rest position, `acc_norm` should be close to `1.0 g`.
 * Firmware does not know `experiment_id`, project-level `device_id`, `subject_id`, `movement_type`, or `movement_label`.
 
@@ -105,7 +97,8 @@ Known firmware / transport limits:
 
 * `session_id` is device-local and can repeat after device reset (handled by logger-side `recording_run_id`).
 * `sample_rate_hz` means configured / selected rate, not verified effective rate.
-* Effective sampling rate must be calculated later from `DATA.device_timestamp_ms`.
+* Effective sampling rate calculated by `analyze_recordings.py` from timestamps.
+* При длинных записях (>500 строк в очереди) возможны единичные потери — `[WARN] HTTP queue full`. В EXP13 потерь не зафиксировано.
 * Long recording stability and battery life are not yet measured.
 
 ---
@@ -187,106 +180,46 @@ It only changes how multiple DATA lines are transported.
 M5StickC Plus2 → USB Serial / COM6 → tools/serial_logger.py
 ```
 
-Status:
-
-```text
-working / useful for debugging
-```
-
-Serial output remains immediate line-by-line.
+Status: working / useful for debugging. Serial output immediate.
 
 ### Wireless working path
 
 ```text
 M5StickC Plus2
   → Wi-Fi
-  → HTTP POST /line
+  → HTTP POST /line (FreeRTOS async, ядро 0)
   → tools/http_logger.py
   → CSV / metadata
 ```
 
-Status:
-
-```text
-working
-```
+Status: working. Подтверждено на EXP13: `effective_hz = 100.0 Hz`, `gaps = 0`.
 
 Current HTTP behavior:
 
 ```text
-IDLE:
-  DEVICE_INFO  → one-shot HTTP POST
-  SAMPLE_RATE  → one-shot HTTP POST
-  NEW_SESSION  → one-shot HTTP POST
+IMU / loop() — ядро 1 (Arduino default)
+task_http    — ядро 0 (FreeRTOS, pinned)
 
-RECORDING:
-  START → immediate HTTP POST through recording client
-  DATA  → buffered and sent in batches
-  STOP  → flush DATA batch first, then send STOP
+task_http:
+  DATA  → батч 20 строк, flush каждые 200ms или при заполнении
+  EVENT → flush DATA, потом one-shot POST
+  свежий HTTPClient на каждый батч (setReuse убран)
 ```
 
-Current batch parameters:
+Batch parameters:
 
 ```cpp
-HTTP_BATCH_MAX_LINES = 25
-HTTP_BATCH_MAX_AGE_MS = 500
-```
-
-Confirmed transport result:
-
-```text
-100 Hz works in the current HTTP batch test
-```
-
-Earlier findings:
-
-```text
-per-sample HTTP POST was insufficient for 25 / 50 Hz
-HTTP keep-alive per sample did not solve the problem
-HTTP batch mode solved the current transport bottleneck
+HTTP_QUEUE_SIZE      = 500   // строк в FreeRTOS очереди
+HTTP_BATCH_MAX_LINES = 20
+HTTP_BATCH_MAX_AGE_MS = 200
+HTTP_TIMEOUT_MS      = 2000
+task_http stack      = 16384 байт
 ```
 
 The Python HTTP logger is launched from repository root:
 
 ```powershell
-python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --device-id m5_001 --create-metadata
-```
-
-HTTP endpoints:
-
-```text
-GET  /health
-POST /line
-```
-
-`POST /line` may contain either:
-
-```text
-one protocol line
-```
-
-or:
-
-```text
-newline-separated batch of protocol lines
-```
-
-The logger treats both forms the same by splitting the HTTP body into lines.
-
-Current local network note:
-
-```text
-For iPad / M5StickC to reach the Python HTTP logger,
-Windows network profile must be Private, not Public.
-```
-
-If HTTP fails with `code=-1`, check:
-
-```text
-http_logger.py is running
-LOGGER_URL IP is correct
-Windows network profile is Private
-firewall allows Python on Private networks
+python tools/http_logger.py --host 0.0.0.0 --port 8080 --experiment-id EXP01 --device-id m5-01 --create-metadata
 ```
 
 ---
@@ -669,172 +602,83 @@ feature/recording-runs-and-safe-file-names
 Current active branch:
 
 ```text
-main
-```
-
-Next planned branch:
-
-```text
-feature/serial-logger-recording-runs
-feature/analyze-recordings
+feature/async-http
 ```
 
 ---
 
 ## Current next actions
 
-### 1. Update serial_logger.py with recording_run_id
-
-Apply the same changes as `http_logger.py`:
+### 1. Закоммитить текущую ветку feature/async-http
 
 ```text
-recording_run_id assigned by logger
-safe file names: run_A_session_A001_100Hz.csv
-session_uid includes recording_run_id
-metadata fields: recording_run_id, device_session_id
-```
-
-### 2. Create quick analysis tooling
-
-Planned next tool:
-
-```text
+firmware v0.8.0
 tools/analyze_recordings.py
+docs/guides/01_setup.md
+docs/guides/02_usage.md
+knowledge/sessions/2026-06-14_...session.md
+knowledge/takeaways/2026-06-14_...takeaways.md
 ```
 
-Minimum useful behavior:
+### 2. Собрать первый чистый датасет движений
 
-```text
-read one CSV file or all CSV files for one experiment
-calculate duration_sec
-calculate effective_sample_rate_hz
-calculate dt_ms statistics
-calculate basic acc_norm / gyro statistics
-save session_quality.csv
-save acc_norm and dt_ms plots
-```
-
-This is the next practical step before building a metadata browser.
-
----
-
-## Planned utility — basic metadata and plot browser
-
-A small local browser is planned after safe filenames and quick analysis tooling.
-
-Preferred first implementation:
-
-```text
-tools/motion_browser.py
-```
-
-Likely stack:
-
-```text
-Streamlit
-```
-
-Initial scope:
-
-```text
-read recording_sessions.json
-list sessions / recording runs
-filter by experiment_id, device_id, sample_rate_hz, movement label, status
-open one CSV file
-show acc_norm plot
-show ax / ay / az plot
-show gx / gy / gz plot
-show dt_ms plot
-show basic quality metrics
-```
-
-Current boundary:
-
-```text
-This is a local lab tool.
-This is not a product dashboard.
-This is not a full metadata editor yet.
-```
-
-Status:
-
-```text
-planned after safe file names and quick analysis
-```
-
----
-
-## Planned analysis layer — quick quality and ML features
-
-The immediate planned analysis layer should focus on quick, useful metrics for collected CSV files.
-
-Working name:
-
-```text
-tools/analyze_recordings.py
-```
-
-Initial outputs:
-
-```text
-data/analysis/[experiment_id]/session_quality.csv
-data/analysis/[experiment_id]/plots/
-```
-
-Minimum metrics:
-
-```text
-rows
-duration_sec
-configured sample_rate_hz
-effective_sample_rate_hz
-mean_dt_ms
-median_dt_ms
-min_dt_ms
-max_dt_ms
-p95_dt_ms
-gap count
-acc_norm_mean
-acc_norm_std
-acc_norm_max
-gyro_norm_mean
-gyro_norm_max
-quality_status
-```
-
-Possible quality statuses:
-
-```text
-OK
-WARN_GAPS
-WARN_SHORT
-WARN_RATE_MISMATCH
-BAD_EMPTY
-```
-
-Near-term ML / education path:
-
-```text
-MotionBlocks CSV
-  → features.csv
-  → Orange Data Mining / scikit-learn / Edge Impulse
-```
-
-Children-facing quick-win classes:
+Целевые классы:
 
 ```text
 idle
 walking
+jumping
 shake
-impact
-fall_like
+stairs_up / stairs_down
 ```
 
-Status:
+Несколько субъектов, несколько записей на класс. Использовать motion_browser.py для заполнения метаданных сразу после записи.
+
+### 3. Запустить анализ датасета
+
+```powershell
+python tools/analyze_recordings.py --experiment EXP__
+```
+
+Убедиться что все файлы получили статус `OK`.
+
+### 4. Первый ML эксперимент
+
+Orange Data Mining или scikit-learn на features.csv.
+
+---
+
+## Analysis and browser tools
+
+### tools/analyze_recordings.py
+
+Status: **working**.
+
+```powershell
+python tools/analyze_recordings.py --file data\raw\EXP01\m5-01\run_A_session_A001_100Hz.csv
+python tools/analyze_recordings.py --experiment EXP01
+python tools/analyze_recordings.py --all
+```
+
+Outputs:
 
 ```text
-planned after safe file names
+data/analysis/[experiment_id]/session_quality.csv
+data/analysis/[experiment_id]/plots/[file]_acc_norm.png
+data/analysis/[experiment_id]/plots/[file]_dt_ms.png
 ```
+
+Качество подтверждено на EXP13: все файлы `✅ OK`, `effective_hz = 100.0 Hz`.
+
+### tools/motion_browser.py
+
+Status: **working**.
+
+```powershell
+streamlit run tools/motion_browser.py
+```
+
+Modes: 🗂 Обзор / 📈 Просмотр / ✏️ Редактор.
 
 ---
 
@@ -842,14 +686,11 @@ planned after safe file names
 
 * `serial_logger.py` not yet updated with `recording_run_id` — still writes `session_A001.csv`.
 * `sample_rate_hz` currently means configured / selected rate, not verified effective rate.
-* Effective sample rate is not yet calculated automatically.
-* Long-record stability at 25 / 50 / 100 Hz still needs measurement.
-* Battery life in Wi-Fi batch logging mode is not yet measured.
-* Metadata still requires manual completion after recording.
+* При длинных активных записях (>500 строк в FreeRTOS очереди) возможны единичные потери DATA строк — `[WARN] HTTP queue full`. В EXP13 не зафиксировано.
+* Long-record stability at 100 Hz still needs measurement beyond EXP13 test recordings.
+* Battery life in Wi-Fi async HTTP mode is not yet measured.
+* Metadata still requires manual completion after recording (motion_browser.py облегчает, но не автоматизирует).
 * `records_actual` is not automatically updated after STOP.
-* There is no plot viewer yet.
-* There is no quick quality report yet.
-* There is no metadata browser yet.
 
 ---
 
@@ -869,36 +710,33 @@ planned after safe file names
 
 ## Recent Changes
 
+### 2026-06-14
+
+* Обнаружен и исправлен критический дефект: HTTP POST блокировал IMU опрос → `effective_hz ≈ 48 Hz` при gaps ~300ms.
+* Firmware v0.8.0: async HTTP через FreeRTOS. `task_http` на ядре 0, `loop()` на ядре 1.
+* Первый подтверждённо чистый датасет EXP13: `effective_hz = 100.0 Hz`, `gaps = 0`, статус `OK`.
+* `tools/analyze_recordings.py` создан и подтверждён.
+* `tools/motion_browser.py` v2: режимы Обзор / Просмотр / Редактор.
+* Metadata v2: `subjects.json`, `schema.json`, упрощённый формат сессий.
+* `docs/guides/01_setup.md` и `02_usage.md` написаны.
+* Ветковая стратегия: feature ветки от последней feature ветки, в `main` не мержим.
+* `data/analysis/` добавлен в `.gitignore`.
+* Phase transition: от отладки транспорта → к сбору чистого датасета.
+
 ### 2026-06-13 (end of day)
 
 * Implemented `recording_run_id` in `tools/http_logger.py`.
 * Safe file names: `run_A_session_A001_100Hz.csv`.
-* `session_uid` now includes `recording_run_id`: `EXP01_m5_001_A_A001`.
-* `SessionWriter` made thread-safe with `threading.Lock`.
-* `IMU_NOT_UPDATED` event now written to CSV.
-* Logger console: DATA lines no longer printed per-sample; replaced with `[REC]` status every 2s and `[STOP]` summary with duration and file name.
 * Firmware bumped to v0.7.0.
-* Sample rate selection screen: all 5 options visible simultaneously, button hints removed.
-* Double-click window increased from 400 ms to 600 ms.
-* Wi-Fi indicator (green/red dot) added to REC screen.
-* SAVED screen shown 1.2s after STOP.
-* Screen refresh changed from sample counter to time-based (200 ms).
-* DATA line in firmware uses `snprintf` static buffer instead of `String` concatenation.
 * Branch `feature/recording-runs-and-safe-file-names` merged to `main`.
 
 ### 2026-06-13 (earlier)
 
 * Added `EVENT,DEVICE_INFO` and MAC-based device resolution.
 * Added startup sampling-rate selection: 5 / 10 / 25 / 50 / 100 Hz.
-* Added `EVENT,SAMPLE_RATE` to the protocol.
-* Tested per-sample HTTP POST and found it insufficient for 25 / 50 Hz.
-* Tested HTTP keep-alive and rejected it as insufficient.
-* Implemented HTTP batch mode for `DATA` rows during recording.
-* Confirmed 100 Hz works in current HTTP batch test.
+* HTTP batch mode implemented and confirmed at 100 Hz.
 
 ### 2026-06-10
 
 * Wireless HTTP logging verified and working.
 * Phase transition from wired Serial debugging to wireless HTTP data collection.
-* Device display layout improved.
-* Draft JSON metadata generation working.
