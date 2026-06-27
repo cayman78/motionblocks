@@ -1,0 +1,4 @@
+file_name,file_path,session_uid,configured_hz,total_rows,data_rows,records,duration_sec,effective_hz,mean_dt_ms,median_dt_ms,min_dt_ms,max_dt_ms,p95_dt_ms,gap_count,acc_norm_mean,acc_norm_std,acc_norm_max,gyro_norm_mean,gyro_norm_max,quality_status,quality_notes
+run_A_session_A001_100Hz.csv,data/raw/EXP13/m5-01/run_A_session_A001_100Hz.csv,EXP13_m5-01_A_A001,100,1147,1142,2,14.48,100.0,10.0,10.0,10.0,11.0,10.0,0,1.1237,0.3319,2.4631,137.71,499.79,OK,—
+run_A_session_A002_100Hz.csv,data/raw/EXP13/m5-01/run_A_session_A002_100Hz.csv,EXP13_m5-01_A_A002,100,1408,1401,3,17.64,100.0,10.0,10.0,10.0,10.0,10.0,0,1.2685,0.9191,5.5939,171.36,590.55,OK,—
+run_A_session_A003_100Hz.csv,data/raw/EXP13/m5-01/run_A_session_A003_100Hz.csv,EXP13_m5-01_A_A003,100,810,805,2,11.6,100.0,10.0,10.0,10.0,10.0,10.0,0,0.9972,0.1846,2.5798,90.79,425.94,OK,—

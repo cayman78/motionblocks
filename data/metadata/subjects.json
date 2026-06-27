@@ -1,0 +1,30 @@
+[
+  {
+    "subject_id": "adult_01",
+    "role": "adult",
+    "age_group": "adult",
+    "dominant_hand": "right",
+    "notes": "Илья"
+  },
+  {
+    "subject_id": "child_01",
+    "role": "child",
+    "age_group": "child",
+    "dominant_hand": "right",
+    "notes": "Андрей"
+  },
+  {
+    "subject_id": "child_02",
+    "role": "child",
+    "age_group": "child",
+    "dominant_hand": "unknown",
+    "notes": ""
+  },
+  {
+    "subject_id": "mentor_01",
+    "role": "mentor",
+    "age_group": "adult",
+    "dominant_hand": "right",
+    "notes": ""
+  }
+]

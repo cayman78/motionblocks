@@ -1,0 +1,9 @@
+{
+  "window_sec": 2.0,
+  "step_sec": 0.5,
+  "trim_start_sec": 1.0,
+  "trim_end_sec": 1.0,
+  "acc_norm_rest": 1.0,
+  "min_window_fill": 0.7,
+  "description": "Параметры скользящего окна для compute_features.py. Переопределяются через CLI аргументы."
+}

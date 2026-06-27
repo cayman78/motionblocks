@@ -1,0 +1,2 @@
+file_name,file_path,session_uid,configured_hz,total_rows,data_rows,records,duration_sec,effective_hz,mean_dt_ms,median_dt_ms,min_dt_ms,max_dt_ms,p95_dt_ms,gap_count,acc_norm_mean,acc_norm_std,acc_norm_max,gyro_norm_mean,gyro_norm_max,quality_status,quality_notes
+run_A_session_A001_100Hz.csv,data/raw/EXP15/m5-01/run_A_session_A001_100Hz.csv,EXP15_m5-01_A_A001,100,8762,8758,1,87.57,100.0,10.0,10.0,10.0,11.0,10.0,0,1.1515,0.8063,9.25,117.48,1140.37,OK,—

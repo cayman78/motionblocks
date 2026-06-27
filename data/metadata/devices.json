@@ -1,0 +1,10 @@
+[
+  {
+    "device_id": "m5-01",
+    "device_name": "M5StickC Plus2 primary prototype",
+    "hardware_model": "M5StickC Plus2",
+    "mac_address": "F0:24:F9:97:ED:08",
+    "status": "active",
+    "notes": "Primary MotionBlocks prototype device"
+  }
+]

@@ -1,0 +1,10 @@
+file_name,file_path,session_uid,configured_hz,total_rows,data_rows,records,duration_sec,effective_hz,mean_dt_ms,median_dt_ms,min_dt_ms,max_dt_ms,p95_dt_ms,gap_count,acc_norm_mean,acc_norm_std,acc_norm_max,gyro_norm_mean,gyro_norm_max,quality_status,quality_notes
+run_A_session_A001_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A001_100Hz.csv,EXP14_m5-01_A_A001,100,10304,10283,10,228.83,100.0,10.0,10.0,10.0,10.0,10.0,0,1.13,0.3217,3.4615,162.21,934.15,OK,—
+run_A_session_A002_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A002_100Hz.csv,EXP14_m5-01_A_A002,100,4417,4402,7,100.18,100.0,10.0,10.0,10.0,10.0,10.0,0,1.3343,1.259,8.1516,160.73,994.55,OK,—
+run_A_session_A003_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A003_100Hz.csv,EXP14_m5-01_A_A003,100,5693,5676,8,80.53,100.0,10.0,10.0,10.0,10.0,10.0,0,1.4366,0.8668,6.2661,193.74,677.17,OK,—
+run_A_session_A004_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A004_100Hz.csv,EXP14_m5-01_A_A004,100,4190,4179,5,59.74,100.0,10.0,10.0,10.0,11.0,10.0,0,1.1428,0.5599,4.5873,181.34,867.27,OK,—
+run_A_session_A005_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A005_100Hz.csv,EXP14_m5-01_A_A005,100,2529,2514,7,114.76,100.0,10.0,10.0,10.0,10.0,10.0,0,1.0573,0.2536,2.6819,133.06,842.85,OK,—
+run_A_session_A006_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A006_100Hz.csv,EXP14_m5-01_A_A006,100,1239,1232,3,21.1,100.0,10.0,10.0,10.0,10.0,10.0,0,1.1587,0.4586,3.2964,158.6,611.8,OK,—
+run_A_session_A007_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A007_100Hz.csv,EXP14_m5-01_A_A007,100,3112,3099,6,63.53,100.0,10.0,10.0,10.0,10.0,10.0,0,1.0149,0.1331,2.3411,64.39,598.91,OK,—
+run_A_session_A008_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A008_100Hz.csv,EXP14_m5-01_A_A008,100,2027,2020,3,40.99,100.0,10.0,10.0,10.0,10.0,10.0,0,1.0612,0.1895,2.3706,114.64,548.11,OK,—
+run_A_session_A009_100Hz.csv,data/raw/EXP14/m5-01/run_A_session_A009_100Hz.csv,EXP14_m5-01_A_A009,100,1514,1505,4,57.32,100.0,10.0,10.0,10.0,10.0,10.0,0,1.2059,0.5112,4.0715,137.77,783.65,OK,—
