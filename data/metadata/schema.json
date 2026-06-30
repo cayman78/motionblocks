@@ -1,0 +1,47 @@
+{
+  "schema_version": "motionblocks.sample.v0.1",
+  "description": "MotionBlocks IMU schema — M5StickC Plus2, 6-axis IMU + derived acc_norm",
+  "channels": [
+    {
+      "name": "ax",
+      "kind": "acceleration",
+      "axis": "x",
+      "unit": "g"
+    },
+    {
+      "name": "ay",
+      "kind": "acceleration",
+      "axis": "y",
+      "unit": "g"
+    },
+    {
+      "name": "az",
+      "kind": "acceleration",
+      "axis": "z",
+      "unit": "g"
+    },
+    {
+      "name": "gx",
+      "kind": "angular_velocity",
+      "axis": "x",
+      "unit": "deg_per_sec"
+    },
+    {
+      "name": "gy",
+      "kind": "angular_velocity",
+      "axis": "y",
+      "unit": "deg_per_sec"
+    },
+    {
+      "name": "gz",
+      "kind": "angular_velocity",
+      "axis": "z",
+      "unit": "deg_per_sec"
+    },
+    {
+      "name": "acc_norm",
+      "kind": "derived_acceleration_norm",
+      "unit": "g"
+    }
+  ]
+}

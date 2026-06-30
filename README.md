@@ -58,14 +58,14 @@ Guardian (в разработке) детекция падения → опов�
 
 ## Стек
 
-| Слой | Технология |
-|---|---|
-| Firmware | Arduino / ESP32 / FreeRTOS |
-| IDE | VS Code + PlatformIO |
-| Логгер | Python 3 |
-| Анализ | Orange Data Mining, scikit-learn (в разработке) |
-| Данные | CSV + JSON |
-| Версионирование | Git / GitHub |
+| Слой            | Технология                                      |
+| --------------- | ----------------------------------------------- |
+| Firmware        | Arduino / ESP32 / FreeRTOS                      |
+| IDE             | VS Code + PlatformIO                            |
+| Логгер          | Python 3                                        |
+| Анализ          | Orange Data Mining, scikit-learn (в разработке) |
+| Данные          | CSV + JSON                                      |
+| Версионирование | Git / GitHub                                    |
 
 ---
 

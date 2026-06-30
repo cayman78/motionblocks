@@ -418,5 +418,26 @@
     "records_actual": null,
     "comment": "",
     "status": "draft"
+  },
+  {
+    "experiment_id": "EXP20",
+    "device_id": "m5-01",
+    "recording_run_id": "A",
+    "device_session_id": "A001",
+    "session_uid": "EXP20_m5-01_A_A001",
+    "file_name": "run_A_session_A001_10Hz.csv",
+    "file_path": "data/raw/EXP20/m5-01/run_A_session_A001_10Hz.csv",
+    "data_format": "wide_csv",
+    "schema_version": "motionblocks.sample.v0.1",
+    "firmware_version": "motionblocks.logger.v0.8.1",
+    "movement_type": "unknown",
+    "movement_label": "unknown",
+    "subject_id": "unknown",
+    "wrist": null,
+    "started_at": "2026-06-28T18:06:13",
+    "sample_rate_hz": 10,
+    "records_actual": null,
+    "comment": "",
+    "status": "draft"
   }
 ]

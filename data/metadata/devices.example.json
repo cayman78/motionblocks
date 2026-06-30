@@ -1,0 +1,10 @@
+[
+  {
+    "device_id": "m5_001",
+    "device_name": "M5StickC Plus2 primary prototype",
+    "hardware_model": "M5StickC Plus2",
+    "mac_address": "AA:BB:CC:DD:EE:FF",
+    "status": "active",
+    "notes": "Example device registry record. Copy this file to devices.json and replace mac_address with the real device MAC."
+  }
+]

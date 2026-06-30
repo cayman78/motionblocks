@@ -239,38 +239,8 @@ venv/
 .DS_Store
 Thumbs.db
 
-# MotionBlocks generated data
-data/raw/*
-!data/raw/.gitkeep
-!data/raw/README.md
-
-data/processed/*
-!data/processed/.gitkeep
-!data/processed/README.md
-
-data/features/*
-!data/features/.gitkeep
-!data/features/README.md
-
-# Local auto-generated metadata
-data/metadata/*
-!data/metadata/.gitkeep
-!data/metadata/README.md
-
-# Local databases
-data/db/*
-!data/db/.gitkeep
-!data/db/README.md
-
-# Keep examples under version control
-!data/examples/
-!data/examples/**
-
 # Local Wi-Fi credentials
 firmware/m5stickc-plus2/src/wifi_config.h
-# Analysis outputs
-data/analysis/*
-!data/analysis/.gitkeep
 
 # LLM knowledge base — отдельный репозиторий
 knowledge/

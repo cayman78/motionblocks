@@ -281,5 +281,27 @@
     "comments": "",
     "status": "draft",
     "tags": []
+  },
+  {
+    "experiment_id": "EXP20",
+    "short_name": "EXP20",
+    "title": "Ознакомление с усройством с Петей",
+    "started_at": "2026-06-28T18:06:13",
+    "ended_at": null,
+    "location": "unknown",
+    "environment": "unknown",
+    "goal": "",
+    "participants": [],
+    "operator_id": "unknown",
+    "device_ids": [
+      "m5-01"
+    ],
+    "default_device_position": "unknown",
+    "default_wrist": null,
+    "default_sample_rate_hz": 10,
+    "protocol": "Button-controlled recording. Button A starts/stops records. Button B switches to next session.",
+    "comments": "",
+    "status": "draft",
+    "tags": []
   }
 ]
